@@ -250,7 +250,7 @@ export abstract class OrcaRuntimeWithResolveWorktreeRemovalTarget extends OrcaRu
     return { handle, tabId: leaf.tabId, title }
   }
 
-  protected async resolveAgentTerminalCreateOptions(
+  async resolveAgentTerminalCreateOptions(
     workspace: TerminalWorkspaceLaunchScope,
     opts: TerminalCreateOptions
   ): Promise<TerminalCreateOptions> {

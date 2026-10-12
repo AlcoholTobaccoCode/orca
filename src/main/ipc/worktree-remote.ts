@@ -640,7 +640,7 @@ async function getSelectedHostedReviewForBranch(
 export async function prepareWorktreePushTarget(
   repoPath: string,
   target: GitPushTarget,
-  store?: WorktreePushTargetStore,
+  store?: WorktreePushTargetStore | null,
   repoId?: string,
   gitOptions: { wslDistro?: string } = {}
 ): Promise<GitPushTarget> {
@@ -685,7 +685,7 @@ export async function prepareWorktreePushTarget(
 export async function materializeWorktreePushTargetRemote(
   repoPath: string,
   target: GitPushTarget,
-  store?: WorktreePushTargetStore,
+  store?: WorktreePushTargetStore | null,
   repoId?: string,
   gitOptions: { wslDistro?: string } = {},
   worktreeId?: string
@@ -756,7 +756,7 @@ async function adoptExistingForkRemoteForBranch(
   repoPath: string,
   target: GitPushTarget,
   gitOptions: { wslDistro?: string },
-  store: WorktreePushTargetStore | undefined,
+  store: WorktreePushTargetStore | null | undefined,
   repoId: string | undefined,
   worktreeId: string | undefined
 ): Promise<GitPushTarget> {
@@ -790,7 +790,8 @@ async function adoptExistingForkRemoteForBranch(
   const owned =
     store !== undefined &&
     ownerRepoId !== undefined &&
-    isPushTargetRemoteCreatedByKnownWorktree(store, restored, ownerRepoId)
+    // SAFETY: Legacy null keeps this branch's original failure rather than introducing a fallback.
+    isPushTargetRemoteCreatedByKnownWorktree(store!, restored, ownerRepoId)
   const adopted = owned ? { ...restored, remoteCreated: true } : restored
   persistMaterializedPushTargetIfCreated(store, worktreeId, adopted)
   return adopted
@@ -830,7 +831,7 @@ function runForkRemoteAdoption<T>(
 // predates `markRemoteOrcaCreated` (no git-config marker either). `setWorktreeMeta` is
 // optional on `WorktreePushTargetStore` so narrow test/reconciliation stores keep compiling.
 function persistMaterializedPushTargetIfCreated(
-  store: WorktreePushTargetStore | undefined,
+  store: WorktreePushTargetStore | null | undefined,
   worktreeId: string | undefined,
   target: GitPushTarget
 ): void {
