@@ -20,7 +20,6 @@ export function HostWorkspaceList({ controller }: { controller: HostScreenContro
     actions,
     activeWorktreeScroll,
     catalog,
-    client,
     connState,
     contentMaxWidth,
     displayWorktrees,
@@ -73,6 +72,12 @@ export function HostWorkspaceList({ controller }: { controller: HostScreenContro
           onDismiss={() => setDismissedNotice(noticeParam ?? null)}
         />
       )}
+      {state.serverNotice ? (
+        <HostRouteNoticeBanner
+          message={state.serverNotice}
+          onDismiss={() => state.setServerNotice(null)}
+        />
+      ) : null}
 
       {/* An action that did not happen. Above the list and dismissible, because the list, the
           header and the confirm it re-opens all have to stay on screen. */}
@@ -186,8 +191,7 @@ export function HostWorkspaceList({ controller }: { controller: HostScreenContro
               hideRepo={state.groupMode === 'repo'}
               onPress={actions.openWorktreeSession}
               onAgentPress={actions.openWorktreeSession}
-              statusLive={connState === 'connected'}
-              hostClockOffsetMs={state.worktreeCatalogRef.current.clockOffsetFor(client, hostId)}
+              statusLive={connState === 'connected' && !item.hostContextHealthLabel}
               onLongPress={
                 item.workspaceKind === 'folder-workspace' ? undefined : state.setActionTarget
               }

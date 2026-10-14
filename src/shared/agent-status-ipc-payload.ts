@@ -6,7 +6,6 @@
 import type { StructuredHostStatus } from './agent-hook-listener/listener-event'
 import type { AgentProviderSessionMetadata } from './agent-session-resume'
 import type { WithAgentStatusObservation } from './agent-status-observation'
-import type { AgentChildWorkView } from './agent-status-child-work-view'
 import type {
   AgentStatusExecutionId,
   AgentStatusProviderAlias,
@@ -31,8 +30,6 @@ export type MigrationUnsupportedPtyEntry = {
 }
 
 export type AgentStatusIpcPayload = ParsedAgentStatusPayload & {
-  /** Read-time views of the canonical store; never admitted from a hook payload. */
-  children?: AgentChildWorkView[]
   /** Optional run-aware identity; absent on legacy hosts and compatibility projections. */
   runId?: AgentStatusRunId
   /** Host-owned process-incarnation attachment for the run-aware row. */

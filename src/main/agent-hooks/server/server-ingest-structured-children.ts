@@ -7,7 +7,10 @@ import {
   reconcileAgentChildWorkEvidence,
   type AgentChildWorkReconcileOutcome
 } from '../../../shared/agent-status-child-work-reconciliation'
-import type { AgentChildWorkView } from '../../../shared/agent-status-child-work-view'
+import {
+  projectAgentChildWorkViews,
+  type AgentChildWorkView
+} from '../../../shared/agent-status-child-work-view'
 import {
   parseAgentStatusSubject,
   type AgentStatusStructuredSessionSubject
@@ -61,7 +64,10 @@ export abstract class AgentHookServerIngestStructuredChildren extends AgentHookS
 
   /** The same records as the views every surface reads; the one record-to-view projection. */
   getStructuredChildWorkViews(subject: AgentStatusStructuredSessionSubject): AgentChildWorkView[] {
-    const parent = parseAgentStatusSubject(subject)
-    return parent ? this.canonicalChildViews(parent) : []
+    const children = this.getStructuredChildWork(subject)
+    return projectAgentChildWorkViews(
+      children,
+      children.flatMap((child) => this.canonicalStatusStore.getAliasesForChild(child.childWorkId))
+    )
   }
 }

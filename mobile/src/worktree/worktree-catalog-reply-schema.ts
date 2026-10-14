@@ -26,8 +26,7 @@ import { salvagedOptional } from '../../../src/shared/zod-salvage'
 export const worktreeCatalogSchema = z.looseObject({
   worktrees: salvagedOptional('worktrees', z.array(z.unknown())),
   snapshotId: salvagedOptional('snapshotId', z.string()),
-  unchanged: salvagedOptional('unchanged', z.boolean()),
-  observedAt: salvagedOptional('observedAt', z.number().finite().nonnegative())
+  unchanged: salvagedOptional('unchanged', z.boolean())
 })
 
 /**

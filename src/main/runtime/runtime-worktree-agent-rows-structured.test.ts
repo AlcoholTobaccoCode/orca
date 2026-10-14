@@ -1,8 +1,10 @@
 import { makeStructuredAgentStatusSubject } from '../../shared/agent-status-subject'
 import { collectRuntimeWorktreeAgentSources } from './runtime-worktree-agent-sources'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { attachRuntimeWorktreeAgentRows } from './runtime-worktree-agent-rows'
+import { statusFeedChildView } from '../native-chat/agent-session-wire/structured-agent-session-status-feed-test-session'
+import { normalizeAgentStatusPayload } from '../../shared/agent-status-types'
 import { resolveWorktreeCatalogSnapshot } from './rpc/worktree-catalog-snapshot'
+import { attachRuntimeWorktreeAgentRows } from './runtime-worktree-agent-rows'
 import {
   structuredAgentSessionPaneKey,
   structuredAgentSessionTabId
@@ -46,15 +48,11 @@ function summary(over: Partial<AgentSessionStatusSummary> = {}): AgentSessionSta
   } as AgentSessionStatusSummary
 }
 
-function attach(
-  summaries: AgentSessionStatusSummary[],
-  beforeRead?: (store: AgentHookServer) => void,
-  store = new AgentHookServer()
-): RuntimeWorktreePsSummary {
+function attach(summaries: AgentSessionStatusSummary[]): RuntimeWorktreePsSummary {
+  const store = new AgentHookServer()
   for (const entry of summaries) {
     store.ingestStructuredStatus(entry, SUBJECT)
   }
-  beforeRead?.(store)
   const row = {
     worktreeId: WORKTREE_ID,
     status: 'inactive',
@@ -64,8 +62,6 @@ function attach(
   const summariesById = new Map<string, RuntimeWorktreePsSummary>([[WORKTREE_ID, row]])
   attachRuntimeWorktreeAgentRows({
     summaries: summariesById,
-    pathIndex: { byPath: new Map(), byRealPath: new Map() } as never,
-    missingWorktreeIds: new Set(),
     workingTerminalEvidenceByWorktreeId: new Map(),
     rowSources: collectRuntimeWorktreeAgentSources({
       mirroredWorktreeIdByTabId: new Map(),
@@ -74,10 +70,12 @@ function attach(
         paneKeys: new Set(),
         ptyIdByTerminalHandle: new Map()
       },
-      hookSnapshots: store.getStatusSnapshot()
+      hookSnapshots: store.getStatusSnapshot(),
+      readStructuredSummary: (sessionId) =>
+        summaries.findLast((entry) => entry.sessionId === sessionId)
     }),
     orchestrationByPaneKey: null,
-    getSummary: (map, _p, _m, id) => map.get(id) ?? null
+    getSummary: (id) => summariesById.get(id) ?? null
   })
   return row
 }
@@ -87,85 +85,33 @@ beforeEach(() => {
 })
 
 describe('worktree ps reports structured sessions', () => {
-  it('keeps catalogs unchanged for usage-only ticks within a minute, but publishes row facts immediately', () => {
-    const server = new AgentHookServer()
-    server.ingestStructuredStatus(summary(), SUBJECT)
-    const live = {
-      type: 'live',
-      observedAt: 200,
-      child: {
-        handle: { idKind: 'task_id', id: 'agent-1', runId: 'spawn' },
-        kind: 'agent',
-        residency: 'background',
-        state: 'working',
-        description: 'Audit the build',
-        stoppable: false
-      }
-    } as const
-    const publish = (observedAt: number, totalTokens: number, lastMessage?: string) => {
-      server.ingestStructuredChildWork(
-        SUBJECT,
-        [
-          {
-            ...live,
-            observedAt,
-            child: { ...live.child, totalTokens, lastMessage }
-          }
-        ],
-        'claude'
-      )
-    }
-    const read = () => ({
-      worktrees: [attach([], undefined, server)],
+  it('carries canonical summary children, invalidates child-only changes, and clears an omitted roster', () => {
+    const child = statusFeedChildView()
+    const catalog = (children: (typeof child)[] | undefined) => ({
+      worktrees: [attach([summary({ children })])],
       totalCount: 1,
       truncated: false
     })
-    publish(60_100, 1)
-    const first = resolveWorktreeCatalogSnapshot(read(), null)
-    publish(60_900, 2)
-    expect(resolveWorktreeCatalogSnapshot(read(), first.snapshotId)).toEqual({
+    const first = catalog([child])
+    expect(first.worktrees[0]?.agents[0]).toMatchObject({
+      children: [child],
+      subagentObservation: 'live'
+    })
+    const initial = resolveWorktreeCatalogSnapshot(first, null)
+    expect(resolveWorktreeCatalogSnapshot(catalog([child]), initial.snapshotId)).toEqual({
       unchanged: true,
-      snapshotId: first.snapshotId
+      snapshotId: initial.snapshotId
     })
-    publish(61_000, 3, 'Checking navigation')
-    expect(resolveWorktreeCatalogSnapshot(read(), first.snapshotId)).not.toHaveProperty('unchanged')
-    const progress = resolveWorktreeCatalogSnapshot(read(), null)
-    publish(120_100, 4, 'Checking navigation')
-    expect(resolveWorktreeCatalogSnapshot(read(), progress.snapshotId)).not.toHaveProperty(
-      'unchanged'
+    expect(
+      resolveWorktreeCatalogSnapshot(catalog([{ ...child, state: 'waiting' }]), initial.snapshotId)
+    ).not.toHaveProperty('unchanged')
+    expect(catalog(undefined).worktrees[0]?.agents[0]?.children).toEqual([])
+    // Old readers keep the parent fields; hook payloads cannot become a child producer.
+    expect(normalizeAgentStatusPayload({ state: 'working', children: [child] })).not.toHaveProperty(
+      'children'
     )
-    expect(server.getStructuredChildWorkViews(SUBJECT)[0]).toMatchObject({
-      observedAt: 120_100,
-      totalTokens: 4
-    })
   })
-  it('projects native children from the same canonical store without creating extra parents', () => {
-    const row = attach([summary()], (store) => {
-      store.ingestStructuredChildWork(
-        SUBJECT,
-        [
-          {
-            type: 'live',
-            observedAt: 1_757_030_400_100,
-            child: {
-              handle: { idKind: 'task_id', id: 'native-child', runId: 'spawn' },
-              kind: 'agent',
-              residency: 'background',
-              state: 'working',
-              description: 'Review tests',
-              stoppable: false
-            }
-          }
-        ],
-        'claude'
-      )
-    })
-    expect(row.agents).toHaveLength(1)
-    expect(row.agents[0]?.children).toEqual([
-      expect.objectContaining({ providerId: 'native-child', description: 'Review tests' })
-    ])
-    expect(attach([summary()]).agents[0]?.children).toEqual([])
-  })
+
   it("lists a person's Stop still ending the turn, and drops it once the host does", () => {
     expect(attach([summary({ stopping: true })]).agents[0]).toMatchObject({
       state: 'working',

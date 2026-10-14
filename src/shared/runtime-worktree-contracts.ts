@@ -11,6 +11,13 @@ import type {
 } from './worktree/lineage-types'
 import type { RuntimeListingHostScope } from './runtime-listing-host-scope'
 import type { GitWorktreeInfo, Worktree } from './worktree/types'
+import type { WorkspaceStatusWarning } from './workspace-status-warning'
+
+export type RuntimeWorktreeSetResult = {
+  worktree: RuntimeWorktreeRecord
+  /** Older hosts omit warnings; metadata writes still succeed. */
+  warnings?: WorkspaceStatusWarning[]
+}
 
 export type RuntimeWorktreeAgentRow = {
   paneKey: string
@@ -34,8 +41,8 @@ export type RuntimeWorktreeAgentRow = {
   /** Native canonical views win over the CLI roster, including an explicit empty list. */
   children?: AgentChildWorkView[]
   subagents?: AgentSubagentSnapshot[]
-  /** Serving clock minus the CLI execution clock. Absent when relay clocks are unproven. */
-  subagentClockOffsetMs?: number
+  /** The host's freshness verdict; child clocks cannot be compared with the phone's clock. */
+  subagentObservation?: 'live' | 'unverifiable'
   restoredUnconfirmed?: boolean
   /** The structured session host still runs this row's provider child, so it is fresh regardless
    *  of age. Optional on the wire: old hosts never send it. */
@@ -71,6 +78,7 @@ export type RuntimeWorktreePsSummary = {
   linkedLinearIssue: string | null
   linkedGitLabMR: number | null
   linkedGitLabIssue: number | null
+  linkedItems?: Worktree['linkedItems']
   comment: string
   isPinned: boolean
   isActive: boolean
@@ -147,8 +155,6 @@ export type RuntimeWorktreeRemoveResult = RemoveWorktreeResult & {
 }
 
 export type RuntimeWorktreePsResult = {
-  /** Serving-host clock sample, attached after snapshot hashing; absent on older hosts. */
-  observedAt?: number
   worktrees: RuntimeWorktreePsSummary[]
   totalCount: number
   truncated: boolean
@@ -159,7 +165,6 @@ export type RuntimeWorktreePsResult = {
 export type RuntimeWorktreePsSnapshotResult = RuntimeWorktreePsResult & { snapshotId: string }
 
 export type RuntimeWorktreePsUnchangedResult = {
-  observedAt?: number
   unchanged: true
   snapshotId: string
 }

@@ -11,7 +11,6 @@ type Props = {
   now: number
   unvisited: boolean
   statusLive?: boolean
-  hostClockOffsetMs?: number
   isReadOnly?: boolean
   onAgentPress?: (paneKey: string) => void
 }
@@ -24,7 +23,6 @@ export function WorktreeAgentList({
   now,
   unvisited,
   statusLive = false,
-  hostClockOffsetMs,
   isReadOnly = false,
   onAgentPress
 }: Props) {
@@ -48,7 +46,7 @@ export function WorktreeAgentList({
       ) : null}
       {!usesSummary || expanded
         ? nodes.map((node) => {
-            const children = worktreeAgentChildRows(node.row, now, statusLive, hostClockOffsetMs)
+            const children = worktreeAgentChildRows(node.row, statusLive)
             return (
               <Fragment key={node.row.paneKey}>
                 <WorktreeAgentRow
@@ -57,14 +55,13 @@ export function WorktreeAgentList({
                   now={now}
                   unvisited={unvisited}
                 />
-                {children.rows.map((childRow) => (
+                {children.map((childRow) => (
                   <WorktreeAgentRow
                     key={childRow.id}
                     agent={node.row}
                     childRow={childRow}
                     depth={node.depth + 1}
                     now={now}
-                    elapsedNow={children.elapsedNow}
                     unvisited={unvisited}
                     isReadOnly={isReadOnly}
                     onPress={onAgentPress}

@@ -24,7 +24,6 @@ type Props = {
   // unvisited rule (the workspace title and its agent rows share one signal).
   unvisited: boolean
   childRow?: AgentChildRowModel
-  elapsedNow?: number
   isReadOnly?: boolean
   onPress?: (paneKey: string) => void
 }
@@ -37,7 +36,6 @@ function WorktreeAgentRowComponent({
   now,
   unvisited,
   childRow,
-  elapsedNow,
   isReadOnly,
   onPress
 }: Props) {
@@ -52,11 +50,7 @@ function WorktreeAgentRowComponent({
     now
   )
   const childText = childRow ? mobileAgentChildRowText(childRow, now) : null
-  const ts = childRow
-    ? elapsedNow !== undefined && childRow.firstObservedAt > 0
-      ? formatTimeAgo(childRow.firstObservedAt, elapsedNow)
-      : ''
-    : formatTimeAgo(agentRowTimeAt(agent), now)
+  const ts = childRow ? '' : formatTimeAgo(agentRowTimeAt(agent), now)
 
   const content = (
     <View style={[styles.row, { paddingLeft: depth * INDENT_PER_DEPTH }]}>

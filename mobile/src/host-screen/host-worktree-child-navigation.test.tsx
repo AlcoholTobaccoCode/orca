@@ -5,8 +5,8 @@ import {
   structuredAgentSessionPaneKey,
   structuredAgentSessionTabId
 } from '../../../src/shared/structured-agent-session-projection'
-import { notificationPaneTab } from '../session/notification-pane-tab'
-import type { MobileSessionTab } from '../session/mobile-session-route-types'
+import type { RpcClient } from '../transport/rpc-client'
+import { MOBILE_DESKTOP_RELAY_RUNTIME_CAPABILITY } from '../../../src/shared/mobile-desktop-relay-contract'
 import type { Worktree } from '../worktree/workspace-list-types'
 import { useHostScreenState } from './use-host-screen-state'
 import { useHostWorktreeActions } from './use-host-worktree-actions'
@@ -36,37 +36,30 @@ const sessionId = '10000000-0000-4000-8000-000000000000'
 const nativeTabId = structuredAgentSessionTabId(sessionId)
 const terminalKey = `terminal:${sessionId}`
 const nativeKey = structuredAgentSessionPaneKey(nativeTabId, sessionId)
-const tabs: MobileSessionTab[] = [
-  {
-    type: 'terminal',
-    id: 'leaf',
-    parentTabId: 'terminal',
-    leafId: sessionId,
-    title: 'Codex',
-    terminal: 'term',
-    isActive: false
-  },
-  {
-    type: 'agent-session',
-    id: nativeTabId,
-    sessionId,
-    agent: 'claude',
-    title: 'Claude',
-    isActive: false
-  }
-]
-
 describe('a workspace child opens its parent pane', () => {
-  it.each([terminalKey, nativeKey])(
-    'selects %s even in the already-open embedded workspace',
-    async (paneKey) => {
+  it.each([
+    [terminalKey, undefined],
+    [nativeKey, undefined],
+    [terminalKey, 'runtime:server'],
+    [nativeKey, 'runtime:server']
+  ] as const)(
+    'selects parent %s on %s through the workspace action',
+    async (paneKey, executionHost) => {
       const push = vi.fn()
       const replace = vi.fn()
+      const sendRequest = vi.fn(async (_method: string, _params: unknown, _options?: unknown) => ({
+        ok: true,
+        result: {}
+      }))
+      // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: this action only sends activation; the scoped client never uses its other methods.
+      const client = { sendRequest } as unknown as RpcClient
+      const row = { ...item, ...(executionHost ? { hostId: executionHost } : {}) }
       const held: { open?: (item: Worktree, paneKey?: string) => void } = {}
       function Probe() {
         const state = useHostScreenState('host', undefined)
         held.open = useHostWorktreeActions({
-          client: null,
+          client,
+          hostCapabilities: [MOBILE_DESKTOP_RELAY_RUNTIME_CAPABILITY],
           connState: 'connected',
           embedded: true,
           fetchWorktrees: async () => {},
@@ -86,23 +79,23 @@ describe('a workspace child opens its parent pane', () => {
         tree = create(createElement(Probe))
       })
       await act(async () => {
-        held.open?.(item, paneKey)
+        held.open?.(row, paneKey)
       })
       const target = replace.mock.calls[0]?.[0]
       expect(target).toBe(
-        `/h/host/session/folder-one?name=Folder&paneKey=${encodeURIComponent(paneKey)}`
+        `/h/host/session/folder-one?name=Folder${executionHost ? `&executionHost=${encodeURIComponent(executionHost)}` : ''}&paneKey=${encodeURIComponent(paneKey)}`
       )
-      expect(
-        notificationPaneTab(tabs, new URLSearchParams(target.split('?')[1]).get('paneKey')!)
-      ).toBe(tabs[paneKey === terminalKey ? 0 : 1])
-      await act(async () => {
-        held.open?.(item, paneKey)
-      })
-      expect(replace).toHaveBeenCalledTimes(2)
-      await act(async () => {
-        held.open?.(item)
-      })
-      expect(replace).toHaveBeenCalledTimes(2)
+      expect(sendRequest.mock.calls[0]?.slice(0, 2)).toEqual([
+        'worktree.activate',
+        {
+          worktree: 'id:folder-one',
+          notifyClients: false,
+          navigation: 'caller'
+        }
+      ])
+      expect(sendRequest.mock.calls[0]?.[2]).toEqual(
+        executionHost ? { envelope: { executionHost } } : undefined
+      )
       expect(push).not.toHaveBeenCalled()
       await act(async () => {
         tree!.unmount()

@@ -44,95 +44,38 @@ describe('WorktreeAgentList', () => {
     renderer = null
   })
 
-  it('inserts CLI and native children immediately under their parent at one extra depth', async () => {
-    const cli = {
-      ...agent('cli'),
-      subagents: [
-        { id: 'review', description: 'Review tests', state: 'working' as const, startedAt: 100 },
-        {
-          id: 'navigation',
-          description: 'Check navigation',
-          state: 'waiting' as const,
-          startedAt: 200
-        }
-      ],
-      subagentClockOffsetMs: 0
-    }
-    const native = {
-      ...agent('native', 'cli'),
-      children: [
-        {
-          id: 'native-child',
-          kind: 'agent' as const,
-          name: 'Native review',
-          state: 'working' as const,
-          membership: 'live' as const,
-          firstObservedAt: 100,
-          observedAt: 900,
-          stoppable: false,
-          invocation: { invocationId: 'spawn', generation: 1 }
-        }
-      ]
-    }
+  it('collapses multiple agents to their status icons by default', async () => {
+    const stopPropagation = vi.fn()
     const onAgentPress = vi.fn()
     await act(async () => {
       renderer = create(
         createElement(WorktreeAgentList, {
-          agents: [cli, native],
+          agents: [
+            {
+              ...agent('agent-1'),
+              subagentObservation: 'live',
+              children: [
+                {
+                  id: 'child',
+                  kind: 'agent',
+                  name: 'Review tests',
+                  state: 'working',
+                  membership: 'live',
+                  firstObservedAt: 100,
+                  observedAt: 900,
+                  stoppable: false,
+                  invocation: { invocationId: 'spawn', generation: 1 }
+                }
+              ],
+              subagents: [{ id: 'obsolete', state: 'working', startedAt: 1 }]
+            },
+            agent('agent-2'),
+            agent('agent-3')
+          ],
           now: 2_000,
           unvisited: false,
           statusLive: true,
-          hostClockOffsetMs: 0,
           onAgentPress
-        })
-      )
-    })
-    const rows = renderer!.root.findAllByType('WorktreeAgentRow')
-    expect(
-      rows.map((row) => [row.props.agent.paneKey, row.props.childRow?.id, row.props.depth])
-    ).toEqual([
-      ['cli', undefined, 0],
-      ['cli', 'review', 1],
-      ['cli', 'navigation', 1],
-      ['native', undefined, 1],
-      ['native', 'native-child', 2]
-    ])
-    expect(rows[1].props.onPress).toBe(onAgentPress)
-    expect(rows[4].props.onPress).toBe(onAgentPress)
-    expect(renderer!.root.findAllByType('Pressable')).toHaveLength(0)
-  })
-
-  it('counts only real root parents when children are hidden by the existing summary', async () => {
-    const first = {
-      ...agent('first'),
-      subagents: [{ id: 'child', state: 'working' as const, startedAt: 100 }]
-    }
-    await act(async () => {
-      renderer = create(
-        createElement(WorktreeAgentList, {
-          agents: [first, agent('second')],
-          now: 2_000,
-          unvisited: false,
-          statusLive: true,
-          hostClockOffsetMs: 0
-        })
-      )
-    })
-    const summary = renderer!.root.findByType('Pressable')
-    expect(summary.props.accessibilityLabel).toBe('Expand 2 agents')
-    expect(renderer!.root.findAllByType('WorktreeAgentRow')).toHaveLength(0)
-    await act(async () => summary.props.onPress({ stopPropagation: vi.fn() }))
-    expect(renderer!.root.findAllByType('WorktreeAgentRow')).toHaveLength(3)
-  })
-
-  it('collapses multiple agents to their status icons by default', async () => {
-    const stopPropagation = vi.fn()
-    await act(async () => {
-      renderer = create(
-        createElement(WorktreeAgentList, {
-          agents: [agent('agent-1'), agent('agent-2'), agent('agent-3')],
-          now: 2_000,
-          unvisited: false
         })
       )
     })
@@ -148,7 +91,16 @@ describe('WorktreeAgentList', () => {
     expect(renderer!.root.findByType('Pressable').props.accessibilityLabel).toBe(
       'Collapse 3 agents'
     )
-    expect(renderer!.root.findAllByType('WorktreeAgentRow')).toHaveLength(3)
+    const rows = renderer!.root.findAllByType('WorktreeAgentRow')
+    expect(rows).toHaveLength(4)
+    expect(rows[1].props.depth).toBe(1)
+    expect(rows[1].props.agent.paneKey).toBe('agent-1')
+    expect(rows[1].props.childRow).toMatchObject({
+      id: 'child',
+      name: 'Review tests',
+      displayState: 'working'
+    })
+    expect(rows[1].props.onPress).toBe(onAgentPress)
   })
 
   it('keeps a single agent visible without a redundant disclosure control', async () => {
