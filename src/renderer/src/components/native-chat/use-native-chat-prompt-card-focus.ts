@@ -1,4 +1,4 @@
-import { useLayoutEffect, type RefObject } from 'react'
+import { useLayoutEffect, useRef, type RefObject } from 'react'
 import { NATIVE_CHAT_ROOT_SELECTOR } from '@/lib/native-chat-paste-request'
 
 /** A prompt card marks itself with this while it wants focus (`shouldFocus`). */
@@ -13,8 +13,16 @@ export function focusNativeChatPromptCard(root: Element, keep: Element | null): 
   if (!card || card.contains(keep)) {
     return false
   }
-  card.focus()
+  focusPromptCardTarget(card)
   return true
+}
+
+function focusPromptCardTarget(card: HTMLElement): void {
+  const target = card.querySelector<HTMLElement>(
+    '[data-native-chat-prompt-card-focus-target]:not(:disabled)'
+  )
+  const focusTarget = target ?? card
+  focusTarget.focus()
 }
 
 /** Whether `element` is nothing in particular (the body) or inside the chat pane holding `card`. */
@@ -22,6 +30,7 @@ export function isInNativeChatPaneOf(card: HTMLElement | null, element: Element 
   return (
     !element ||
     element === document.body ||
+    card?.closest('.native-chat-pane-shell') === element ||
     Boolean(card?.closest(NATIVE_CHAT_ROOT_SELECTOR)?.contains(element))
   )
 }
@@ -37,7 +46,10 @@ export function useNativeChatPromptCardFocus(
   shouldFocus: boolean,
   step?: number
 ): void {
+  const previousStepRef = useRef(step)
   useLayoutEffect(() => {
+    const stepChanged = previousStepRef.current !== step
+    previousStepRef.current = step
     const card = cardRef.current
     const active = document.activeElement
     // The pane's find bar and an open queued-message editor are surfaces of their own: a card
@@ -45,10 +57,12 @@ export function useNativeChatPromptCardFocus(
     if (
       shouldFocus &&
       isInNativeChatPaneOf(card, active) &&
-      !card?.contains(active) &&
+      (!card?.contains(active) || stepChanged) &&
       !active?.closest('[data-native-chat-find-bar], [data-queued-message-editor]')
     ) {
-      card?.focus()
+      if (card) {
+        focusPromptCardTarget(card)
+      }
     }
   }, [cardRef, shouldFocus, step])
 }
