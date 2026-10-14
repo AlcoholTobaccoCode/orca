@@ -27,7 +27,6 @@ const item: Worktree = {
   path: '/workspace',
   liveTerminalCount: 1,
   hasAttachedPty: true,
-  preview: '',
   unread: false,
   isPinned: false,
   linkedPR: null
