@@ -272,7 +272,7 @@
         "remoteUnsupported": "Gérez l'identité du navigateur sur l'hôte distant avec la CLI Orca.",
         "loading": "Chargement…",
         "resetRequired": "Les données d'identité doivent être réinitialisées explicitement avant de pouvoir être modifiées.",
-        "resetRequiredCommand": "Réinitialisez-le à partir de la ligne de commande : orca Browser Identity Set --mode <mode> --reset",
+        "resetRequiredCommand": "Réinitialisez-le à partir de la ligne de commande : orca browser identity set --mode <mode> --reset",
         "optionClean": "Nettoyé",
         "optionCleanTooltip": "Supprime les jetons Orca et Electron pour correspondre aux sessions Chrome importées.",
         "optionNative": "Indigène",

@@ -168,7 +168,7 @@
         "remoteUnsupported": "使用 Orca CLI 管理远程主机上的浏览器身份。",
         "loading": "加载中…",
         "resetRequired": "身份数据必须在更改之前显式重置。",
-        "resetRequiredCommand": "从命令行重置它：orca browser Identity set --mode <mode> --reset",
+        "resetRequiredCommand": "从命令行重置它：orca browser identity set --mode <mode> --reset",
         "optionClean": "已清理",
         "optionCleanTooltip": "删除 Orca 和 Electron 令牌以匹配导入的 Chrome 会话。",
         "optionNative": "原生",
