@@ -30,7 +30,9 @@ export function reuseAiVaultListResult(
   if (
     sessions === current.sessions &&
     issues === current.issues &&
-    current.cancelled === incoming.cancelled
+    current.cancelled === incoming.cancelled &&
+    current.scanId === incoming.scanId &&
+    current.scanKey === incoming.scanKey
   ) {
     return current
   }
