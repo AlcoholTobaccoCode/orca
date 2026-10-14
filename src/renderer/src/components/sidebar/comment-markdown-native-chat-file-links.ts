@@ -21,18 +21,20 @@ const ROOTED_PATH_PREFIX_PATTERN = /^(?:~[\\/]|\.{1,2}[\\/]|[\\/]|[A-Za-z]:[\\/]
 /** Whether a detected path names a file on the chat's host; the terminal's own check. */
 export type FileLinkExists = (link: ParsedTerminalFileLink) => boolean
 
-// Why: a link is underlined only when it names a path; a bare `name.md` resolves nowhere
-// reliable, so underlining it promises a click that cannot open anything.
 function isLinkifiableFile(link: ParsedTerminalFileLink, isProse: boolean): boolean {
+  if (routeNativeChatHref(link.displayText).kind !== 'file') {
+    return false
+  }
+  const hasAlphabeticExtension = /\.[\p{L}][\p{L}\p{N}\p{M}_+-]*$/u.test(link.pathText)
+  if (!/[\\/]/.test(link.pathText)) {
+    // Why: a bare name resolves against the chat's folder, where its agent runs. Only the terminal's
+    // bare-word tokens qualify (no spaces); a numeric extension there is a version, not a file.
+    return !/\s/.test(link.pathText) && (hasAlphabeticExtension || !link.pathText.includes('.'))
+  }
   const hasRootedPrefix = ROOTED_PATH_PREFIX_PATTERN.test(link.pathText)
   const hasLineSuffix = link.line !== null || link.column !== null
-  const hasAlphabeticExtension = /\.[\p{L}][\p{L}\p{N}\p{M}_+-]*$/u.test(link.pathText)
   const hasPathExtension = /\.[\p{L}\p{N}][\p{L}\p{N}\p{M}_+-]*$/u.test(link.pathText)
-  return (
-    /[\\/]/.test(link.pathText) &&
-    (hasRootedPrefix || hasLineSuffix || (isProse ? hasPathExtension : hasAlphabeticExtension)) &&
-    routeNativeChatHref(link.displayText).kind === 'file'
-  )
+  return hasRootedPrefix || hasLineSuffix || (isProse ? hasPathExtension : hasAlphabeticExtension)
 }
 
 // Why: path-shaped candidates are underlined only once the host confirms them; overlapping
