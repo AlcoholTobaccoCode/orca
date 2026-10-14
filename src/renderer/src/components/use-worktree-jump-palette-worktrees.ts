@@ -9,7 +9,7 @@ import { getStructuredChatWorktreeIds } from '@/components/sidebar/visible-workt
 import { isDefaultBranchWorkspace } from '@/components/sidebar/default-branch-workspace'
 import { sortWorktreesSmart } from '@/components/sidebar/smart-sort'
 import { buildWorktreeChecksReviewIndex } from '@/components/cmd-j/worktree-checks-review-index'
-import { getLiveAgentStatusByWorktreeId, isInactiveWorkspace } from '@/lib/worktree-activity-state'
+import { getWorktreeIdsWithLiveAgent, isInactiveWorkspace } from '@/lib/worktree-activity-state'
 import { orderEmptyQueryWorktrees } from '@/lib/order-empty-query-worktrees'
 import {
   getWorktreePaletteSearchScope,
@@ -70,13 +70,16 @@ export function useWorktreeJumpPaletteWorktrees({
   const isLoading = repos.length > 0 && Object.keys(worktreesByRepo).length === 0
   const worktreeIdsWithLiveAgent = useMemo(
     () =>
-      new Set(
-        // The palette recomputes this snapshot when status inputs change; the
-        // clock intentionally reflects the render that performs that snapshot.
+      // The palette recomputes this snapshot when status inputs change; the
+      // clock intentionally reflects the render that performs that snapshot.
+      getWorktreeIdsWithLiveAgent(
+        agentStatusByPaneKey,
+        tabsByWorktree,
         // oxlint-disable-next-line react/purity
-        getLiveAgentStatusByWorktreeId(agentStatusByPaneKey, tabsByWorktree, Date.now()).keys()
+        Date.now(),
+        unifiedTabsByWorktree
       ),
-    [agentStatusByPaneKey, tabsByWorktree]
+    [agentStatusByPaneKey, tabsByWorktree, unifiedTabsByWorktree]
   )
   const pairedDeviceIdsByEnvironment = useMemo(
     () =>
@@ -92,10 +95,10 @@ export function useWorktreeJumpPaletteWorktrees({
   const emptyQueryVisibleWorktrees = useMemo(
     () =>
       workspaces.filter((worktree) => {
-        if (worktree.isArchived) {
-          return false
-        }
-        if (filterPredicate && !filterPredicate.matchesWorktree(worktree)) {
+        if (
+          worktree.isArchived ||
+          (filterPredicate && !filterPredicate.matchesWorktree(worktree))
+        ) {
           return false
         }
         if (
@@ -114,13 +117,11 @@ export function useWorktreeJumpPaletteWorktrees({
         ) {
           return false
         }
-        if (hideAutomationGeneratedWorkspaces && isAutomationGeneratedWorkspace(worktree)) {
-          return false
-        }
-        if (hideCliCreatedWorkspaces && isCliCreatedWorkspace(worktree)) {
-          return false
-        }
-        if (hideDetachedHeadWorkspaces && isDetachedHeadWorkspace(worktree)) {
+        if (
+          (hideAutomationGeneratedWorkspaces && isAutomationGeneratedWorkspace(worktree)) ||
+          (hideCliCreatedWorkspaces && isCliCreatedWorkspace(worktree)) ||
+          (hideDetachedHeadWorkspaces && isDetachedHeadWorkspace(worktree))
+        ) {
           return false
         }
         if (
@@ -132,7 +133,8 @@ export function useWorktreeJumpPaletteWorktrees({
             ptyIdsByTabId,
             browserTabsByWorktree,
             worktreeIdsWithLiveAgent,
-            worktreeIdsWithStructuredChat
+            worktreeIdsWithStructuredChat,
+            worktree.hostId
           )
         ) {
           return false

@@ -158,7 +158,8 @@ export function computeVisibleWorktrees(
           opts.ptyIdsByTabId,
           opts.browserTabsByWorktree,
           opts.worktreeIdsWithLiveAgent,
-          opts.worktreeIdsWithStructuredChat
+          opts.worktreeIdsWithStructuredChat,
+          getWorktreeExecutionHostId(w, opts.repoMap.get(w.repoId), opts.defaultHostId)
         )
     )
   }

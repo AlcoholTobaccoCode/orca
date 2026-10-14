@@ -125,7 +125,8 @@ export function useSidebarWorktreeFilters() {
       const liveAgentWorktrees = getWorktreeIdsWithLiveAgent(
         state.agentStatusByPaneKey,
         tabsByWorktree,
-        getAgentStatusEpochNow(state.agentStatusEpoch)
+        getAgentStatusEpochNow(state.agentStatusEpoch),
+        state.unifiedTabsByWorktree
       )
       if (
         !isSleepingSweepExemptWorkspace(worktree, state.alwaysShowDefaultBranchWorkspace) &&
@@ -135,7 +136,8 @@ export function useSidebarWorktreeFilters() {
           state.ptyIdsByTabId,
           browserTabsByWorktree,
           liveAgentWorktrees,
-          getWorktreeIdsWithStructuredChat(state.unifiedTabsByWorktree)
+          getWorktreeIdsWithStructuredChat(state.unifiedTabsByWorktree),
+          targetHostId
         )
       ) {
         state.setShowSleepingWorkspaces(true)
