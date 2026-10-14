@@ -79,8 +79,8 @@ export type AgentChildRowContext = {
    *  host): recency for a child whose host reports no clock of its own. */
   parentObservedAt: number
   /** Reader clock minus the host's, at that evidence; 0 for a parent observed on this machine. Moves
-   *  a child's host-stamped clock onto the reader's. Null withholds ages when clocks are unproven. */
-  hostClockOffsetMs: number | null
+   *  a child's host-stamped clock onto the reader's, so no age subtracts across two machines. */
+  hostClockOffsetMs: number
 }
 
 /** The context a parent row gives its children. Every surface that lists one parent's children
@@ -160,8 +160,7 @@ function messageOrRole(source: AgentChildRowDetailSource): AgentChildRowDetail |
 /** The one rule for what a child row says, in the order a CLI agent row decides it. */
 function agentChildRowDetail(
   source: AgentChildRowDetailSource,
-  displayState: AgentChildDisplayState,
-  clockComparable = true
+  displayState: AgentChildDisplayState
 ): AgentChildRowDetail | null {
   if (source.evidence === 'run-state') {
     return displayState === 'waiting' ||
@@ -172,7 +171,7 @@ function agentChildRowDetail(
   }
   switch (displayState) {
     case 'unverifiable':
-      return clockComparable ? { kind: 'no-update' } : { kind: 'reason', state: 'unverifiable' }
+      return { kind: 'no-update' }
     case 'monitoring':
       // A shell or monitor names itself; only an agent's own tool line goes stale.
       return source.kind === 'agent' ? { kind: 'monitoring' } : null
@@ -237,12 +236,11 @@ function rowFromView(
         lastMessage: view.lastMessage,
         settled
       },
-      displayState,
-      context.hostClockOffsetMs !== null
+      displayState
     ),
     firstObservedAt: view.firstObservedAt,
     observedAt: view.observedAt,
-    recencyAt: view.observedAt + (context.hostClockOffsetMs ?? 0),
+    recencyAt: view.observedAt + context.hostClockOffsetMs,
     ...(view.settledAt !== undefined ? { settledAt: view.settledAt } : {}),
     ...(view.totalTokens !== undefined ? { totalTokens: view.totalTokens } : {}),
     canStop: agentChildWorkViewOffersStop(view),
@@ -301,8 +299,7 @@ export function buildLegacyAgentChildRowModels(
       ...(subagent.model !== undefined ? { model: subagent.model } : {}),
       detail: agentChildRowDetail(
         { evidence: 'child', kind: 'agent', name, agentType: subagent.agentType, settled: false },
-        displayState,
-        context.hostClockOffsetMs !== null
+        displayState
       ),
       firstObservedAt: subagent.startedAt,
       recencyAt: context.parentObservedAt,

@@ -16,7 +16,6 @@ vi.mock('lucide-react-native', () => ({
 }))
 vi.mock('./AgentStateDot', () => ({ AgentStateDot: () => null }))
 vi.mock('./MobileAgentIcon', () => ({ MobileAgentIcon: () => null }))
-vi.mock('./WorktreeAgentRow', () => ({ WorktreeAgentRow: 'WorktreeAgentRow' }))
 
 function agent(paneKey: string, parentPaneKey: string | null = null): RuntimeWorktreeAgentRow {
   return {
@@ -44,7 +43,10 @@ describe('WorktreeAgentList', () => {
     renderer = null
   })
 
-  it('collapses multiple agents to their status icons by default', async () => {
+  it.each([
+    [100, '2m'],
+    [0, '']
+  ] as const)('collapses agents and shows child age %s as %s', async (startedAt, age) => {
     const stopPropagation = vi.fn()
     const onAgentPress = vi.fn()
     await act(async () => {
@@ -61,7 +63,7 @@ describe('WorktreeAgentList', () => {
                   name: 'Review tests',
                   state: 'working',
                   membership: 'live',
-                  firstObservedAt: 100,
+                  firstObservedAt: startedAt,
                   observedAt: 900,
                   stoppable: false,
                   invocation: { invocationId: 'spawn', generation: 1 }
@@ -72,7 +74,7 @@ describe('WorktreeAgentList', () => {
             agent('agent-2'),
             agent('agent-3')
           ],
-          now: 2_000,
+          now: 120_100,
           unvisited: false,
           statusLive: true,
           onAgentPress
@@ -83,15 +85,13 @@ describe('WorktreeAgentList', () => {
     const summary = renderer!.root.findByType('Pressable')
     expect(summary.props.accessibilityLabel).toBe('Expand 3 agents')
     expect(summary.props.accessibilityState).toEqual({ expanded: false })
-    expect(renderer!.root.findAllByType('WorktreeAgentRow')).toHaveLength(0)
+    expect(renderer!.root.findAll((node) => node.props.agent !== undefined)).toHaveLength(0)
 
     await act(async () => summary.props.onPress({ stopPropagation }))
 
     expect(stopPropagation).toHaveBeenCalledTimes(1)
-    expect(renderer!.root.findByType('Pressable').props.accessibilityLabel).toBe(
-      'Collapse 3 agents'
-    )
-    const rows = renderer!.root.findAllByType('WorktreeAgentRow')
+    expect(summary.props.accessibilityLabel).toBe('Collapse 3 agents')
+    const rows = renderer!.root.findAll((node) => node.props.agent !== undefined)
     expect(rows).toHaveLength(4)
     expect(rows[1].props.depth).toBe(1)
     expect(rows[1].props.agent.paneKey).toBe('agent-1')
@@ -100,7 +100,10 @@ describe('WorktreeAgentList', () => {
       name: 'Review tests',
       displayState: 'working'
     })
-    expect(rows[1].props.onPress).toBe(onAgentPress)
+    await act(async () => rows[1].findByType('Pressable').props.onPress({ stopPropagation }))
+    expect(onAgentPress).toHaveBeenCalledWith('agent-1')
+    expect(rows[0].findAllByType('Text').at(-1)?.props.children).toBe('1m')
+    expect(rows[1].findAllByType('Text').at(-1)?.props.children).toBe(age)
   })
 
   it('keeps a single agent visible without a redundant disclosure control', async () => {
@@ -115,7 +118,7 @@ describe('WorktreeAgentList', () => {
     })
 
     expect(renderer!.root.findAllByType('Pressable')).toHaveLength(0)
-    expect(renderer!.root.findAllByType('WorktreeAgentRow')).toHaveLength(1)
+    expect(renderer!.root.findAll((node) => node.props.agent !== undefined)).toHaveLength(1)
   })
 
   it('summarizes lineage by root agents like desktop', async () => {

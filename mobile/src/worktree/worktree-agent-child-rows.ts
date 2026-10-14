@@ -13,9 +13,8 @@ export function worktreeAgentChildRows(agent: RuntimeWorktreeAgentRow, live: boo
     {
       parentEvidenceFresh: agent.subagentObservation === 'live',
       transportObservation: live ? 'live' : 'unverifiable',
-      parentObservedAt: 0,
-      // Phone and execution-host clocks have no shared provenance.
-      hostClockOffsetMs: null
+      parentObservedAt: agent.updatedAt,
+      hostClockOffsetMs: 0
     }
   )
 }

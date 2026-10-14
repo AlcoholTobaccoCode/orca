@@ -50,7 +50,8 @@ function WorktreeAgentRowComponent({
     now
   )
   const childText = childRow ? mobileAgentChildRowText(childRow, now) : null
-  const ts = childRow ? '' : formatTimeAgo(agentRowTimeAt(agent), now)
+  const timeAt = childRow ? childRow.firstObservedAt : agentRowTimeAt(agent)
+  const ts = childRow && timeAt <= 0 ? '' : formatTimeAgo(timeAt, now)
 
   const content = (
     <View style={[styles.row, { paddingLeft: depth * INDENT_PER_DEPTH }]}>
