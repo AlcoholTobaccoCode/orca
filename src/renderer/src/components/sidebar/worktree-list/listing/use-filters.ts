@@ -135,7 +135,10 @@ export function useSidebarWorktreeFilters() {
           state.ptyIdsByTabId,
           browserTabsByWorktree,
           liveAgentWorktrees,
-          getWorktreeIdsWithStructuredChat(state.unifiedTabsByWorktree)
+          getWorktreeIdsWithStructuredChat(
+            state.unifiedTabsByWorktree,
+            state.explicitlySleptChatsByWorkspace
+          )
         )
       ) {
         state.setShowSleepingWorkspaces(true)
