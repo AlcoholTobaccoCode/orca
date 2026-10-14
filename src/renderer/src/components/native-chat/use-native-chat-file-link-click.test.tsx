@@ -264,13 +264,20 @@ describe('tool and edit-card file activation', () => {
 })
 
 describe('useNativeChatFileLinkClick', () => {
-  it('opens a bare file name from the chat folder', () => {
-    render(<Transcript markdown="Done. `deck.md` is in the worktree root." />)
+  it('opens whole-code bare names from the chat folder', () => {
+    render(
+      <Transcript markdown="Done. `decision-explainer.html`, `archive.7z` and `Makefile:7`." />
+    )
 
-    clickLink('deck.md')
+    expect(screen.getAllByRole('link').map((link) => link.textContent)).toEqual([
+      'decision-explainer.html',
+      'archive.7z',
+      'Makefile:7'
+    ])
+    clickLink('decision-explainer.html')
 
     expect(mocks.openDetectedFilePath).toHaveBeenCalledWith(
-      '/repo/deck.md',
+      '/repo/decision-explainer.html',
       null,
       null,
       expect.objectContaining({ worktreeId: 'wt-1' })

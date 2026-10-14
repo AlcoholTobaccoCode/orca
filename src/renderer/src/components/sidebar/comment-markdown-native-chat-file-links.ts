@@ -21,20 +21,17 @@ const ROOTED_PATH_PREFIX_PATTERN = /^(?:~[\\/]|\.{1,2}[\\/]|[\\/]|[A-Za-z]:[\\/]
 /** Whether a detected path names a file on the chat's host; the terminal's own check. */
 export type FileLinkExists = (link: ParsedTerminalFileLink) => boolean
 
+// Why: prose still needs a path separator; inline code admits exact bare tokens separately.
 function isLinkifiableFile(link: ParsedTerminalFileLink, isProse: boolean): boolean {
-  if (routeNativeChatHref(link.displayText).kind !== 'file') {
-    return false
-  }
-  const hasAlphabeticExtension = /\.[\p{L}][\p{L}\p{N}\p{M}_+-]*$/u.test(link.pathText)
-  if (!/[\\/]/.test(link.pathText)) {
-    // Why: a bare name resolves against the chat's folder, where its agent runs. Only the terminal's
-    // bare-word tokens qualify (no spaces); a numeric extension there is a version, not a file.
-    return !/\s/.test(link.pathText) && (hasAlphabeticExtension || !link.pathText.includes('.'))
-  }
   const hasRootedPrefix = ROOTED_PATH_PREFIX_PATTERN.test(link.pathText)
   const hasLineSuffix = link.line !== null || link.column !== null
+  const hasAlphabeticExtension = /\.[\p{L}][\p{L}\p{N}\p{M}_+-]*$/u.test(link.pathText)
   const hasPathExtension = /\.[\p{L}\p{N}][\p{L}\p{N}\p{M}_+-]*$/u.test(link.pathText)
-  return hasRootedPrefix || hasLineSuffix || (isProse ? hasPathExtension : hasAlphabeticExtension)
+  return (
+    /[\\/]/.test(link.pathText) &&
+    (hasRootedPrefix || hasLineSuffix || (isProse ? hasPathExtension : hasAlphabeticExtension)) &&
+    routeNativeChatHref(link.displayText).kind === 'file'
+  )
 }
 
 // Why: path-shaped candidates are underlined only once the host confirms them; overlapping
@@ -258,7 +255,13 @@ function inlineCodeFileLink(node: MarkdownNode, exists: FileLinkExists): Markdow
   if (!value) {
     return null
   }
-  const link = exactFileLink(value, exists)
+  const bare = extractTerminalFileLinks(value).find(
+    (candidate) =>
+      candidate.startIndex === 0 &&
+      candidate.endIndex === value.length &&
+      !/[\\/]/.test(candidate.pathText)
+  )
+  const link = bare ? (exists(bare) ? bare : null) : exactFileLink(value, exists)
   return link ? createFileLinkNode(link, node) : null
 }
 

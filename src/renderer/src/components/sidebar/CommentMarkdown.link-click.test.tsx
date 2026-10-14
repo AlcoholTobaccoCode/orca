@@ -348,7 +348,7 @@ describe('CommentMarkdown link click handler', () => {
     expect(example?.closest('a')).toBeNull()
   })
 
-  it('underlines a bare file name only when it exists in the chat folder, and never a folder', () => {
+  it('does not underline a bare prose name or extensionless folder, even when it exists', () => {
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
@@ -357,24 +357,14 @@ describe('CommentMarkdown link click handler', () => {
       root?.render(
         <CommentMarkdown
           variant="document"
-          content="Done. `decision-explainer.html` is in the worktree root. Updated package.json, not `index.ts`; look in src/components or `src/renderer`."
+          content="Updated package.json; look in src/components for the button, or `src/renderer`."
           onLinkClick={vi.fn()}
-          fileLinkExists={filesAt(
-            'decision-explainer.html',
-            'package.json',
-            'src/components',
-            'src/renderer'
-          )}
+          fileLinkExists={everyPathExists}
         />
       )
     })
 
-    const anchors = Array.from(container.querySelectorAll<HTMLAnchorElement>('a'))
-    expect(anchors.map((anchor) => anchor.textContent)).toEqual([
-      'decision-explainer.html',
-      'package.json'
-    ])
-    expect(anchors[0]?.querySelector('code')).not.toBeNull()
+    expect(container.querySelectorAll('a')).toHaveLength(0)
   })
 
   it('links a rooted path and a later relative path in one sentence', () => {
