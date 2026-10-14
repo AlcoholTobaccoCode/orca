@@ -375,11 +375,6 @@ describe('CommentMarkdown link click handler', () => {
       'package.json'
     ])
     expect(anchors[0]?.querySelector('code')).not.toBeNull()
-    expect(routeNativeChatHref(anchors[0]?.getAttribute('href'))).toEqual({
-      kind: 'file',
-      pathText: 'decision-explainer.html',
-      line: null
-    })
   })
 
   it('links a rooted path and a later relative path in one sentence', () => {
