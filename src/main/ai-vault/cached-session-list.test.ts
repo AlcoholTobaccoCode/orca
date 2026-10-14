@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AiVaultListResult } from '../../shared/ai-vault-types'
+import { aiVaultLocalScanKey } from '../../shared/ai-vault-local-scan-key'
 
 const {
   filterPathsToRunningWslDistrosAsync,
@@ -90,12 +91,16 @@ describe('invalidateAiVaultSessionListCache generation guard', () => {
 
   it('caches normally when no invalidation interrupts the scan', async () => {
     scanAiVaultSessionsInService.mockResolvedValueOnce(scanResult('scan-A'))
-    await listAiVaultSessions()
+    const request = { limit: 1000, scopePaths: ['/project'] }
+    const first = await listAiVaultSessions(request)
 
-    // Second non-force call is a cache hit — no second scan.
-    const cached = await listAiVaultSessions()
+    // A narrower request reuses the same scan entry and its progress identity.
+    const cached = await listAiVaultSessions({ ...request, limit: 100 })
 
     expect(cached.scannedAt).toBe('scan-A')
+    expect(cached.scanId).toBe(first.scanId)
+    expect(cached.scanKey).toBe(first.scanKey)
+    expect(cached.scanKey).not.toBe(aiVaultLocalScanKey({ ...request, limit: 100 }))
     expect(scanAiVaultSessionsInService).toHaveBeenCalledTimes(1)
     expect(listRunningWslHomeDirsAsync).toHaveBeenCalledTimes(1)
   })
