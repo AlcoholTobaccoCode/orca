@@ -10,7 +10,6 @@ import type { WorktreeCardPresentation } from './worktree-card-presentation'
 import { WorktreeCardSecondaryRows } from './worktree-card-secondary-rows'
 import { WorktreeCardStatusSlot } from './WorktreeCardStatusSlot'
 import type { WorktreeCardController } from './use-worktree-card-controller'
-import { getWorktreeExecutionHostId } from '../../../../shared/execution-host'
 
 export function WorktreeCardParentContent({
   card,
@@ -148,7 +147,6 @@ export function WorktreeCardParentContent({
         >
           <WorktreeCardStatusSlot
             worktreeId={worktree.id}
-            executionHostId={getWorktreeExecutionHostId(worktree, card.repo)}
             showStatus={showStatus}
             showUnreadAction={showUnreadQuickAction}
             isUnread={worktree.isUnread}

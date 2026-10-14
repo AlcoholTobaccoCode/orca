@@ -76,10 +76,9 @@ export function useWorktreeJumpPaletteWorktrees({
         agentStatusByPaneKey,
         tabsByWorktree,
         // oxlint-disable-next-line react/purity
-        Date.now(),
-        unifiedTabsByWorktree
+        Date.now()
       ),
-    [agentStatusByPaneKey, tabsByWorktree, unifiedTabsByWorktree]
+    [agentStatusByPaneKey, tabsByWorktree]
   )
   const pairedDeviceIdsByEnvironment = useMemo(
     () =>
@@ -95,10 +94,10 @@ export function useWorktreeJumpPaletteWorktrees({
   const emptyQueryVisibleWorktrees = useMemo(
     () =>
       workspaces.filter((worktree) => {
-        if (
-          worktree.isArchived ||
-          (filterPredicate && !filterPredicate.matchesWorktree(worktree))
-        ) {
+        if (worktree.isArchived) {
+          return false
+        }
+        if (filterPredicate && !filterPredicate.matchesWorktree(worktree)) {
           return false
         }
         if (
@@ -117,11 +116,13 @@ export function useWorktreeJumpPaletteWorktrees({
         ) {
           return false
         }
-        if (
-          (hideAutomationGeneratedWorkspaces && isAutomationGeneratedWorkspace(worktree)) ||
-          (hideCliCreatedWorkspaces && isCliCreatedWorkspace(worktree)) ||
-          (hideDetachedHeadWorkspaces && isDetachedHeadWorkspace(worktree))
-        ) {
+        if (hideAutomationGeneratedWorkspaces && isAutomationGeneratedWorkspace(worktree)) {
+          return false
+        }
+        if (hideCliCreatedWorkspaces && isCliCreatedWorkspace(worktree)) {
+          return false
+        }
+        if (hideDetachedHeadWorkspaces && isDetachedHeadWorkspace(worktree)) {
           return false
         }
         if (
@@ -133,8 +134,7 @@ export function useWorktreeJumpPaletteWorktrees({
             ptyIdsByTabId,
             browserTabsByWorktree,
             worktreeIdsWithLiveAgent,
-            worktreeIdsWithStructuredChat,
-            worktree.hostId
+            worktreeIdsWithStructuredChat
           )
         ) {
           return false

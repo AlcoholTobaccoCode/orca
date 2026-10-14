@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { Tab } from '../../../../shared/tab-types'
+import { withWorkspaceChatsSleptAt } from '@/store/slices/tabs/tabs-chat-sleep-actions'
 
 type SleepTestState = {
   activeWorktreeId: string | null
@@ -11,6 +13,8 @@ type SleepTestState = {
   }[]
   projectGroups: { id: string; connectionId: string | null; executionHostId: string | null }[]
   worktreesByRepo?: Record<string, { id: string; repoId: string; hostId: string }[]>
+  unifiedTabsByWorktree: Record<string, Tab[]>
+  setWorkspaceChatsSleptAt: ReturnType<typeof vi.fn>
   setActiveWorktree: ReturnType<typeof vi.fn>
   shutdownWorktreeBrowsers: ReturnType<typeof vi.fn>
   shutdownWorktreeTerminals: ReturnType<typeof vi.fn>
@@ -22,6 +26,8 @@ const mocks = vi.hoisted(() => {
     activeWorkspaceExecutionHostId: null,
     folderWorkspaces: [],
     projectGroups: [],
+    unifiedTabsByWorktree: {},
+    setWorkspaceChatsSleptAt: vi.fn(),
     setActiveWorktree: vi.fn((id: string | null) => {
       state.activeWorktreeId = id
       if (id === null) {
@@ -68,6 +74,23 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
+function chat(tabId: string, sessionId: string, worktreeId: string): Tab {
+  return {
+    id: tabId,
+    entityId: sessionId,
+    groupId: 'group-1',
+    worktreeId,
+    contentType: 'agent-session',
+    agentSessionAgent: 'claude',
+    executionHostId: 'local',
+    label: tabId,
+    customLabel: null,
+    color: null,
+    sortOrder: 0,
+    createdAt: 0
+  }
+}
+
 describe('workspace sleep flow', () => {
   beforeEach(() => {
     vi.stubGlobal('window', {
@@ -81,6 +104,24 @@ describe('workspace sleep flow', () => {
     mocks.state.folderWorkspaces = []
     mocks.state.projectGroups = []
     mocks.state.worktreesByRepo = undefined
+    mocks.state.unifiedTabsByWorktree = {}
+    mocks.state.setWorkspaceChatsSleptAt = vi.fn((worktreeId, chats, sleptAt) => {
+      const captured = new Map<string, { sessionId: string; executionHostId: string }>(
+        chats.map((chat: { tabId: string; sessionId: string; executionHostId: string }) => [
+          chat.tabId,
+          chat
+        ])
+      )
+      mocks.state.unifiedTabsByWorktree = withWorkspaceChatsSleptAt(
+        mocks.state.unifiedTabsByWorktree,
+        worktreeId,
+        sleptAt,
+        (tab) => {
+          const chat = captured.get(tab.id)
+          return chat?.sessionId === tab.entityId && chat.executionHostId === tab.executionHostId
+        }
+      )
+    })
     mocks.state.setActiveWorktree.mockClear()
     mocks.state.shutdownWorktreeBrowsers.mockClear().mockResolvedValue(undefined)
     mocks.state.shutdownWorktreeTerminals.mockClear().mockResolvedValue(undefined)
@@ -257,6 +298,10 @@ describe('workspace sleep flow', () => {
 
   it('invalidates an early completion when the workspace wakes during a slow sibling', async () => {
     const slow = deferred<{ stoppedSessionIds: string[] }>()
+    mocks.state.unifiedTabsByWorktree = {
+      'wt-1': [chat('early', 'first', 'wt-1')],
+      'wt-2': [chat('slow', 'second', 'wt-2')]
+    }
     mocks.call
       .mockResolvedValueOnce({ stoppedSessionIds: ['first'] })
       .mockReturnValueOnce(slow.promise)
@@ -287,5 +332,47 @@ describe('workspace sleep flow', () => {
         completed: true
       }
     ])
+    expect(mocks.state.unifiedTabsByWorktree['wt-1'][0].sleptAt).toBeUndefined()
+    expect(mocks.state.unifiedTabsByWorktree['wt-2'][0].sleptAt).toEqual(expect.any(Number))
+  })
+
+  it('marks only proved original chats on completed targets', async () => {
+    const first = deferred<{ stoppedSessionIds: string[] }>()
+    const second = deferred<{ stoppedSessionIds: string[] }>()
+    mocks.call.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+    mocks.state.shutdownWorktreeBrowsers.mockImplementation(async (worktreeId) => {
+      if (worktreeId === 'wt-2') {
+        throw new Error('panel failed')
+      }
+    })
+    mocks.state.unifiedTabsByWorktree = {
+      'wt-1': [
+        chat('kept', 'session-kept', 'wt-1'),
+        chat('omitted', 'session-omitted', 'wt-1'),
+        chat('replaced', 'session-old', 'wt-1')
+      ],
+      'wt-2': [chat('failed', 'session-failed', 'wt-2')]
+    }
+    const sleep = runSleepWorktrees([
+      { id: 'wt-1', executionHostId: 'local' },
+      { id: 'wt-2', executionHostId: 'local' }
+    ])
+    mocks.state.unifiedTabsByWorktree = {
+      'wt-1': [
+        chat('kept', 'session-kept', 'wt-1'),
+        chat('omitted', 'session-omitted', 'wt-1'),
+        chat('replaced', 'session-new', 'wt-1'),
+        chat('new', 'session-new-tab', 'wt-1')
+      ],
+      'wt-2': [chat('failed', 'session-failed', 'wt-2')]
+    }
+    first.resolve({ stoppedSessionIds: ['session-kept', 'session-old'] })
+    second.resolve({ stoppedSessionIds: ['session-failed'] })
+    const result = await sleep
+    expect(result.map(({ completed }) => completed)).toEqual([true, false])
+    expect(
+      mocks.state.unifiedTabsByWorktree['wt-1'].map((tab) => tab.sleptAt !== undefined)
+    ).toEqual([true, false, false, false])
+    expect(mocks.state.unifiedTabsByWorktree['wt-2'][0].sleptAt).toBeUndefined()
   })
 })
