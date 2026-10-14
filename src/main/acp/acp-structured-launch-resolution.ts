@@ -95,7 +95,7 @@ export type AcpLaunchInvocationDeps = {
   'resolveCommand' | 'homePath' | 'inheritedEnv' | 'dataDirectory'
 >
 
-/** The binary a launch with `env` spawns: the user's Command setting when set, else the stock
+/** The binary a launch with `env` spawns: the applicable Command setting when set, else the stock
  *  binary from PATH, then the agent's own install directories, then its installed managed runtime;
  *  the bare name when none has it. A create's version check resolves through here too, so it asks
  *  about the same file. `dataDirectory` is null only for a spec with no managed runtime. */
@@ -116,7 +116,7 @@ export function resolveAcpLaunchCommand(
   const resolve = (searchPath: string) =>
     resolveStructuredAgentCommand(
       spec.agent,
-      options.commandSettings ?? {},
+      spec.ignoreAgentCommandSetting ? {} : (options.commandSettings ?? {}),
       { pathEnv: searchPath, homePath },
       {
         command: spec.command,
