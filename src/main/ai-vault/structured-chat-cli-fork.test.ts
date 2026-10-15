@@ -29,6 +29,7 @@ function install(record: AgentSessionRecord, copy = vi.fn()) {
 afterEach(async () => {
   setStructuredAgentSessionHost(null)
   prepare.mockClear()
+  vi.unstubAllEnvs()
   if (root) {
     await rm(root, { recursive: true, force: true })
   }
@@ -37,6 +38,7 @@ afterEach(async () => {
 
 it('locates the current Codex rollout in its recorded home and materializes the selected home', async () => {
   root = await mkdtemp(join(tmpdir(), 'chat-cli-fork-'))
+  vi.stubEnv('ORCA_USER_DATA_PATH', root)
   const home = join(root, 'codex-runtime-home', 'home')
   const system = join(root, 'system')
   const record = agentSessionRecordFixture()
