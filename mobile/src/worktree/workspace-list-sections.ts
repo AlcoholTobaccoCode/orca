@@ -198,7 +198,6 @@ export function buildMobileWorkspacePlan(
     isPinned: (worktree) => isWorktreePinned(worktree, pinnedIds),
     duplicatePinned: showPinnedInGroups,
     owningSectionOf: (worktree) => getProjectGroupingForRepo(worktree.repoId, repoMap, projectIndex),
-    showProjectContext: groupMode === 'repo',
     sectionsOf: ({ pinned, natural: canonicalGroupWorktrees, displayRootByIdentity }) => {
       const sections: Section[] = []
       if (pinned.length > 0) {

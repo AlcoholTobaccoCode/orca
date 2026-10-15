@@ -5,7 +5,7 @@ import type { ProjectSectionRepo } from '../../../src/shared/project-section-gro
 
 export type Worktree = {
   sectionListKey?: string
-  /** Owning project or checkout when displayed in another project's section. */
+  /** Owning project or checkout when the containing section does not name it. */
   projectContextLabel?: string
   workspaceKind?: 'git' | 'folder-workspace'
   worktreeId: string

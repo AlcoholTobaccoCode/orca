@@ -135,7 +135,7 @@ describe('recordWorkspaceLineageForCreatedWorktree', () => {
     const store = createStore({
       metaById: { [foreignParentId]: parentMeta({ hostId: 'ssh:other-host' }) }
     })
-    store.getWorktreeMetaForHost.mockReturnValue(parentMeta())
+    store.getWorktreeMetaForHost.mockReturnValue(parentMeta({ projectId: 'project-2' }))
 
     const result = record(store, { parentWorkspace: worktreeWorkspaceKey(foreignParentId) })
 
@@ -148,14 +148,6 @@ describe('recordWorkspaceLineageForCreatedWorktree', () => {
       parentWorkspaceKey: worktreeWorkspaceKey(foreignParentId)
     })
     expect(store.getWorktreeMetaForHost).toHaveBeenCalledWith(foreignParentId, 'local')
-  })
-
-  it('records a different project on the same host', () => {
-    const store = createStore({ metaById: { [PARENT_ID]: parentMeta({ projectId: 'project-2' }) } })
-
-    expect(
-      record(store, { parentWorkspace: worktreeWorkspaceKey(PARENT_ID) }).lineage
-    ).toMatchObject({ parentWorktreeId: PARENT_ID })
   })
 
   it('skips both lineage records when the parent is on another host', () => {

@@ -94,12 +94,13 @@ export function buildWorktreeCardPresentation(card: WorktreeCardController) {
     showRepoIdentityInTitle && !!repo && !hideRepoBadge && !isFolder && !showPinnedRepoIcon
   const showRepoBadgeInMetaRow =
     !showRepoIdentityInTitle && !!repo && !hideRepoBadge && !showPinnedRepoIcon
+  const visibleProjectContext = showRepoBadgeInMetaRow ? undefined : projectContextLabel
   const contextLabel = getVisibleContextLabel(
-    projectContextLabel,
+    visibleProjectContext,
     hostContextLabel,
     cardProps.includes('host')
   )
-  const showHostContextBadge = !!contextLabel && (!compactCards || !!projectContextLabel)
+  const showHostContextBadge = !!contextLabel && (!compactCards || !!visibleProjectContext)
   const showDetachedHeadInMetaRow = !compactCards && !isFolder && detachedHeadDisplay !== null
   const showBranch =
     !isFolder &&
@@ -129,7 +130,7 @@ export function buildWorktreeCardPresentation(card: WorktreeCardController) {
     showMetaRowDetails
   )
   const hasMetaRow = compactCards
-    ? hasMetadataBadge || cacheStartedAt != null || !!projectContextLabel
+    ? hasMetadataBadge || cacheStartedAt != null || !!visibleProjectContext
     : hasDetailedMetaRowContent
   const showHeaderActions = showTitleRowPrimary || showDeleteQuickAction
   // Why: normalize the title once so title/branch de-dupe and identity-only hover eligibility stay in sync.

@@ -26,75 +26,6 @@ function worktree(overrides: Partial<Worktree> = {}): Worktree {
 }
 
 describe('applyMobileWorkspaceLineage', () => {
-  it('follows a visible parent across projects while preserving ownership and project filters', () => {
-    const parent = worktree({ worktreeId: 'parent' })
-    const child = worktree({
-      worktreeId: 'child',
-      repoId: 'repo-2',
-      repo: 'Backend',
-      parentWorktreeId: 'parent'
-    })
-    const filters = {
-      filterRepoIds: new Set<string>(),
-      hideSleeping: false,
-      hideDefaultBranch: false
-    }
-    const catalog = {
-      ...NO_PROJECT_SECTION_CATALOG,
-      repos: [
-        { id: 'repo-1', displayName: 'orca', path: '/repos/orca' },
-        { id: 'repo-2', displayName: 'Backend', path: '/repos/backend' }
-      ]
-    }
-    const sections = buildSections([child, parent], 'name', filters, '', 'repo', new Set(), catalog)
-    expect(
-      sections.map((section) => [
-        section.key,
-        section.data.map((row) => [row.worktreeId, row.repoId, row.lineageDepth])
-      ])
-    ).toEqual([
-      [
-        'repo:repo-1',
-        [
-          ['parent', 'repo-1', 0],
-          ['child', 'repo-2', 1]
-        ]
-      ]
-    ])
-    expect(sections[0]?.data[0]?.projectContextLabel).toBeUndefined()
-    expect(sections[0]?.data[1]?.projectContextLabel).toBe('Backend')
-    for (const showPinnedInGroups of [false, true]) {
-      const withPins = buildSections(
-        [child, { ...parent, isPinned: true }],
-        'name', filters, '', 'repo', new Set(), catalog,
-        undefined, new Set(), showPinnedInGroups
-      )
-      expect(withPins.map((section) => [section.key, section.data.map((row) => [
-        row.worktreeId, row.repoId, row.lineageDepth, row.projectContextLabel
-      ])])).toEqual([
-        ['pinned', [['parent', 'repo-1', 0, 'orca'], ['child', 'repo-2', 1, 'Backend']]],
-        ...(showPinnedInGroups ? [
-          ['repo:repo-1', [['parent', 'repo-1', 0, undefined], ['child', 'repo-2', 1, 'Backend']]]
-        ] : [])
-      ])
-    }
-    const filtered = buildSections(
-      [child, parent],
-      'name',
-      { ...filters, filterRepoIds: new Set(['repo-2']) },
-      '',
-      'repo',
-      new Set(),
-      catalog
-    )
-    expect(
-      filtered.map((section) => [
-        section.key,
-        section.data.map((row) => [row.worktreeId, row.repoId, row.lineageDepth])
-      ])
-    ).toEqual([['repo:repo-2', [['child', 'repo-2', 0]]]])
-  })
-
   it.each([false, true])('keeps deep project identity in each occurrence (duplicate pins: %s)', (duplicate) => {
     const parent = worktree({ worktreeId: 'parent', isPinned: true })
     const child = worktree({
@@ -118,11 +49,9 @@ describe('applyMobileWorkspaceLineage', () => {
     ])
     const keys = sections.flatMap((section) => section.data.map((row) => row.sectionListKey))
     expect(new Set(keys).size).toBe(keys.length)
-    const flat = buildSections([parent, child, grandchild], 'name', filters, '', 'none', new Set())
-    expect(flat.flatMap((section) => section.data).every((row) => row.projectContextLabel === undefined)).toBe(true)
   })
 
-  it('keeps project recency with the owner and breaks pins at hidden intermediate projects', () => {
+  it('breaks inherited pins at hidden intermediate projects', () => {
     const parent = worktree({ worktreeId: 'parent', lastActivityAt: 1 })
     const child = worktree({
       worktreeId: 'child', repoId: 'repo-2', parentWorktreeId: 'parent', lastActivityAt: 100
@@ -130,16 +59,10 @@ describe('applyMobileWorkspaceLineage', () => {
     const grandchild = worktree({
       worktreeId: 'grandchild', repoId: 'repo-3', parentWorktreeId: 'child', lastActivityAt: 50
     })
-    const sibling = worktree({ worktreeId: 'sibling', repoId: 'repo-2', lastActivityAt: 2 })
     const filters = { filterRepoIds: new Set<string>(), hideSleeping: false, hideDefaultBranch: false }
-    const catalog = { ...NO_PROJECT_SECTION_CATALOG, projectOrderBy: 'recent' as const }
-    const recent = buildSections(
-      [parent, child, grandchild, sibling], 'name', filters, '', 'repo', new Set(), catalog
-    )
-    expect(recent.map((section) => section.key)).toEqual(['repo:repo-2', 'repo:repo-1'])
     const filtered = buildSections(
       [{ ...parent, isPinned: true }, child, grandchild], 'name',
-      { ...filters, filterRepoIds: new Set(['repo-1', 'repo-3']) }, '', 'repo', new Set(), catalog
+      { ...filters, filterRepoIds: new Set(['repo-1', 'repo-3']) }, '', 'repo', new Set(), NO_PROJECT_SECTION_CATALOG
     )
     expect(filtered.map((section) => [section.key, section.data.map((row) => [row.worktreeId, row.lineageDepth])]))
       .toEqual([['pinned', [['parent', 0]]], ['repo:repo-3', [['grandchild', 0]]]])

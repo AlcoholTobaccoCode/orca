@@ -139,16 +139,17 @@ describe('memoized worktree rows', () => {
     renderer = null
   })
 
-  it('shows the owning project for a foreign child inside a project section', async () => {
+  it.each([false, true])('names the owner once (Project mode: %s)', async (hideRepo) => {
     await act(async () => {
       renderer = create(createElement(WorktreeListRow, {
         item: { ...baseItem, projectContextLabel: 'Backend checkout', lineageDepth: 1 },
-        isReadOnly: false, now: 2_000, repoColor: '#000000', hideRepo: true,
+        isReadOnly: false, now: 2_000, repoColor: '#000000', hideRepo,
         status: 'active', onPress: () => undefined
       }))
     })
-    expect(renderer!.root.findAllByType(Text).map((node) => node.props.children))
-      .toContain('Backend checkout')
+    const ownerNames = renderer!.root.findAllByType(Text).map((node) => node.props.children)
+      .filter((text) => text === baseItem.repo || text === 'Backend checkout')
+    expect(ownerNames).toEqual([hideRepo ? 'Backend checkout' : baseItem.repo])
   })
 
   it('skips an unrelated parent render but updates for live item fields and time', async () => {

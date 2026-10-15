@@ -75,7 +75,6 @@ export function buildWorktreeOccurrencePlan<
   duplicatePinned: boolean
   sectionsOf: (placement: LineagePlacementRows<Row>) => readonly Section[]
   owningSectionOf?: (row: Row) => { key: string; label: string }
-  showProjectContext?: boolean
 }): WorktreeOccurrencePlan<Row> & { sections: readonly Section[] } {
   const { identityOf, childrenByParentIdentity } = args
   const ownerByIdentity = new Map(
@@ -133,7 +132,7 @@ export function buildWorktreeOccurrencePlan<
           childCount: descendants.length,
           isLastChild: next.isLastChild,
           projectContextLabel:
-            args.showProjectContext && owner && owner.key !== section.key ? owner.label : undefined
+            owner && owner.key !== section.key ? owner.label : undefined
         }
         occurrences.push(occurrence)
         if (section.placement !== 'pinned' || !preferredByIdentity.has(identity)) {

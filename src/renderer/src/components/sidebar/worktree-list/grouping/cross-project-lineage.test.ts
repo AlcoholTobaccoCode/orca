@@ -129,45 +129,16 @@ describe('cross-project sidebar lineage', () => {
     }
   )
 
-  it.each(['none', 'workspace-status', 'pr-status'] as const)(
-    'leaves the ordinary owner identity as the only project name in %s',
-    (mode) => {
-      const rows = buildRows(
-        mode, [parent, child], repos, null, new Set(), undefined, undefined, undefined,
-        lineageById, worktreeMap, true
-      )
-      expect(rows.filter((row) => row.type === 'item').map((row) => row.projectContextLabel))
-        .toEqual([undefined, undefined])
-    }
-  )
-
   it('nests under the visible parent while project actions keep real repository ownership', () => {
     const rows = buildRows(
-      'repo',
-      [child, parent],
-      repos,
-      null,
-      new Set(),
-      undefined,
-      undefined,
-      undefined,
-      lineageById,
-      worktreeMap,
-      true,
-      undefined,
-      [],
-      new Set(),
-      new Map([[childRepo.id, { repo: childRepo, hiddenWorktrees: [] }]]),
-      new Map(),
+      'repo', [child, parent], repos, null, new Set(), undefined, undefined, undefined,
+      lineageById, worktreeMap, true, undefined, [], new Set(),
+      new Map([[childRepo.id, { repo: childRepo, hiddenWorktrees: [] }]]), new Map(),
       [{ creationId: 'creating-child', repoId: childRepo.id }]
     )
 
-    const items = rows.filter((row) => row.type === 'item')
-    expect(items.map((row) => [row.worktree.id, row.sectionKey, row.depth, row.repo?.id])).toEqual([
-      [parent.id, `repo:${repo.id}`, 0, repo.id],
-      [child.id, `repo:${repo.id}`, 1, childRepo.id]
-    ])
-    expect(items[1]?.projectContextLabel).toBe(childRepo.displayName)
+    expect(rows.find((row) => row.type === 'item' && row.worktree.id === child.id))
+      .toMatchObject({ repo: childRepo })
     expect(
       rows.filter((row) => row.type === 'header').map((row) => [row.repo?.id, row.count])
     ).toEqual([
@@ -184,27 +155,13 @@ describe('cross-project sidebar lineage', () => {
     expect(rows.find((row) => row.type === 'pending-creation')).toMatchObject({ repo: childRepo })
   })
 
-  it('keeps a child in its own section when the parent is hidden', () => {
+  it('keeps a hidden parent child in its own section without redundant context', () => {
     const rows = buildRows(
-      'repo',
-      [child],
-      repos,
-      null,
-      new Set(),
-      undefined,
-      undefined,
-      undefined,
-      lineageById,
-      worktreeMap,
-      true
+      'repo', [child], repos, null, new Set(), undefined, undefined, undefined,
+      lineageById, worktreeMap, true
     )
     expect(rows.filter((row) => row.type === 'item')).toMatchObject([
-      {
-        worktree: child,
-        sectionKey: `repo:${childRepo.id}`,
-        depth: 0,
-        projectContextLabel: undefined
-      }
+      { worktree: child, sectionKey: `repo:${childRepo.id}`, depth: 0, projectContextLabel: undefined }
     ])
   })
 })

@@ -151,7 +151,7 @@ function WorktreeListRowComponent({
             <>
               <MobileRepoIcon repoIcon={repoIcon} size={11} color={repoColor} />
               <Text style={styles.repoName} numberOfLines={1}>
-                {item.projectContextLabel ?? item.repo}
+                {hideRepo ? item.projectContextLabel ?? item.repo : item.repo}
               </Text>
             </>
           )}

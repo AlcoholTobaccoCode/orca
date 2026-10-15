@@ -104,7 +104,6 @@ export function buildSidebarRowPlan(
     isPinned: (worktree) => worktree.isPinned === true,
     duplicatePinned: pinnedDisplayPolicy === 'duplicate-in-groups',
     owningSectionOf: (worktree) => getProjectGroupingForRepo(worktree.repoId, repoMap, projectIndex),
-    showProjectContext: groupBy === 'repo',
     sectionsOf: ({ pinned, natural, displayRootByIdentity }) => {
       const groups: OrderedGroupEntry[] =
         groupBy === 'none'

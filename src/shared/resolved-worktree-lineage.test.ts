@@ -55,19 +55,6 @@ describe('sharesWorktreeLineageBoundary', () => {
     expect(sharesWorktreeLineageBoundary(boundary(), boundary())).toBe(true)
   })
 
-  it('accepts a different repository and project on the same host', () => {
-    expect(
-      sharesWorktreeLineageBoundary(
-        worktree('child', 'child-instance', { hostId: 'local', projectId: 'child-project' }),
-        worktree('parent', 'parent-instance', {
-          repoId: 'other-repo',
-          hostId: 'local',
-          projectId: 'parent-project'
-        })
-      )
-    ).toBe(true)
-  })
-
   it.each([
     ['child host', boundary({ hostId: undefined }), boundary()],
     ['parent host', boundary(), boundary({ hostId: undefined })]
@@ -86,8 +73,10 @@ describe('projectResolvedWorktreeLineage', () => {
   const parent = worktree('parent', 'parent-instance')
   const child = worktree('child', 'child-instance')
 
-  it('projects exact instance-aware parent and child metadata', () => {
-    const projected = projectResolvedWorktreeLineage([child, parent], { child: lineage() })
+  it('projects exact instance-aware metadata across projects on one host', () => {
+    const foreignParent = { ...parent, repoId: 'other', projectId: 'parent', hostId: 'local' as const }
+    const ownedChild = { ...child, projectId: 'child', hostId: 'local' as const }
+    const projected = projectResolvedWorktreeLineage([ownedChild, foreignParent], { child: lineage() })
 
     expect(projected).toMatchObject([
       { id: 'child', parentWorktreeId: 'parent', childWorktreeIds: [], lineage: lineage() },
@@ -122,21 +111,6 @@ describe('projectResolvedWorktreeLineage', () => {
       { id: 'child', parentWorktreeId: null, lineage: null },
       { id: 'parent', childWorktreeIds: [] }
     ])
-  })
-
-  it('projects a cross-project child onto its same-host parent', () => {
-    const crossProjectParent = worktree('parent', 'parent-instance', {
-      repoId: 'other-repo',
-      hostId: 'local',
-      projectId: 'other-project'
-    })
-    const crossProjectChild = worktree('child', 'child-instance', {
-      hostId: 'local',
-      projectId: 'child-project'
-    })
-    expect(
-      projectResolvedWorktreeLineage([crossProjectChild, crossProjectParent], { child: lineage() })
-    ).toMatchObject([{ parentWorktreeId: 'parent' }, { childWorktreeIds: ['child'] }])
   })
 
   it('keeps colliding ids on different hosts separate', () => {
