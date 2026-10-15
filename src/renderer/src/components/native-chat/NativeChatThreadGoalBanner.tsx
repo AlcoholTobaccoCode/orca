@@ -49,6 +49,8 @@ export function NativeChatThreadGoalBanner(props: {
   pending: boolean
   /** False where only the agent's own `/goal` changes the goal, which has no pause. */
   hostChanges: boolean
+  /** The composer cannot admit another message or the session is working. */
+  sendUnavailable: boolean
   isVisible: boolean
   /** The session's running turn, or null when idle; goal time accrues only while one runs. */
   runningTurn: { startedAt: number | null } | null
@@ -87,8 +89,8 @@ export function NativeChatThreadGoalBanner(props: {
           <div className="flex shrink-0 items-center">
             <GoalAction
               label={translate('components.native-chat.goal.clear', 'Clear goal')}
-              // Sent mid-turn, the agent's `/goal clear` would steer the turn, not run as a command.
-              disabled={pending || (!props.hostChanges && runningTurn !== null)}
+              // Claude's `/goal clear` must enter a fresh turn, like a composer send.
+              disabled={pending || (!props.hostChanges && props.sendUnavailable)}
               onClick={() => onChange({ kind: 'clear' })}
             >
               <Trash2 className="size-3.5" />

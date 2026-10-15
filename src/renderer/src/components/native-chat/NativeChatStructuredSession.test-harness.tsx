@@ -156,6 +156,7 @@ export function createStructuredSessionMocks() {
     monitoringBackgroundTasks: false,
     showBackgroundTasks: false,
     isWorking: false,
+    sendOut: false,
     turnId: null as string | null,
     // Unset: Stop follows the turn, as against an older host.
     canStop: nullable<boolean>(),
@@ -225,6 +226,7 @@ export function createStructuredSessionMocks() {
             submissions: mocks.submissions,
             send: mocks.send,
             isWorking: mocks.isWorking,
+            sendOut: mocks.sendOut,
             backgroundTasks: {
               show: mocks.showBackgroundTasks || mocks.monitoringBackgroundTasks,
               isMonitoring: mocks.monitoringBackgroundTasks,
@@ -391,6 +393,7 @@ export function createStructuredSessionMocks() {
     mocks.monitoringBackgroundTasks = false
     mocks.showBackgroundTasks = false
     mocks.isWorking = false
+    mocks.sendOut = false
     mocks.turnId = null
     mocks.canStop = null
     mocks.stopPressed = false

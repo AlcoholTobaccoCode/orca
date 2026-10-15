@@ -339,6 +339,7 @@ export function NativeChatStructuredSession(
               goal={controller.threadGoal.goal}
               pending={controller.threadGoal.pending}
               hostChanges={controller.threadGoal.hostChanges}
+              sendUnavailable={structuredTransport.sendOut || controller.isWorking}
               isVisible={props.isVisible}
               runningTurn={
                 controller.turnId === null

@@ -39,6 +39,7 @@ function renderBanner(
         goal={value}
         pending={pending}
         hostChanges
+        sendUnavailable={false}
         isVisible
         runningTurn={runningTurn}
         onChange={onChange}
