@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from 'vitest'
-import { waitForPromiseWithSignal } from '../shared/abort-signal-reason'
 import { flushBackgroundWork, mocks, repo, store } from './__mocks__/worktree-create-preparation'
 import {
   consumePreparedWorktreeCreate,
@@ -46,39 +45,8 @@ describe('prepared checkout shared fetch barrier', () => {
     fetch.settle()
   })
 
-  it('lets a cold racing consume join the first materialization without a second checkout or refresh', async () => {
-    const fetch = deferredFetch()
-    let materializations = 0
-    mocks.prepareCheckout.mockImplementationOnce(
-      async (_repo, _path, _base, _lock, options, barrier) => {
-        await waitForPromiseWithSignal(barrier, options.signal)
-        materializations++
-      }
-    )
-    const preparation = prepareWorktreeCreateForRepo(
-      store,
-      repo,
-      'origin/main',
-      fetch.beforeMaterialization
-    )
-    await vi.waitFor(() => expect(mocks.prepareCheckout).toHaveBeenCalledOnce())
-    const create = consume()
-    await flushBackgroundWork()
-    expect(materializations).toBe(0)
-    expect(mocks.finalize).not.toHaveBeenCalled()
-    fetch.settle()
-    await preparation
-    expect(await create).toMatchObject({ status: 'hit' })
-    expect(materializations).toBe(1)
-    expect(mocks.prepareCheckout).toHaveBeenCalledOnce()
-    expect(mocks.refreshTip).not.toHaveBeenCalled()
-    expect(mocks.finalize).toHaveBeenCalledOnce()
-  })
-
-  it('publishes an existing checkout refresh before a racing consume can finalize', async () => {
+  it('makes an existing checkout unclaimable as soon as a fetch-gated refresh is queued', async () => {
     await prepareWorktreeCreateForRepo(store, repo, 'origin/main')
-    const entry = listPreparations()[0]!
-    const oldReady = entry.ready
     const fetch = deferredFetch()
     const preparation = prepareWorktreeCreateForRepo(
       store,
@@ -86,17 +54,14 @@ describe('prepared checkout shared fetch barrier', () => {
       'origin/main',
       fetch.beforeMaterialization
     )
-    await vi.waitFor(() => expect(entry.ready).not.toBe(oldReady))
-    const create = consume()
     await flushBackgroundWork()
+    expect(await consume()).toMatchObject({ status: 'miss', reason: 'not_ready' })
     expect(mocks.refreshTip).not.toHaveBeenCalled()
-    expect(mocks.finalize).not.toHaveBeenCalled()
     fetch.settle()
     await preparation
-    expect(await create).toMatchObject({ status: 'hit' })
+    expect(await consume()).toMatchObject({ status: 'hit' })
     expect(mocks.prepareCheckout).toHaveBeenCalledOnce()
     expect(mocks.refreshTip).toHaveBeenCalledOnce()
-    expect(mocks.finalize).toHaveBeenCalledOnce()
   })
 
   it('expires a ready checkout while its shared fetch is still pending without waiting for the network', async () => {

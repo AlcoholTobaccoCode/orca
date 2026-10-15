@@ -79,7 +79,10 @@ export async function reservePreparation(
     // different retarget candidate is left for the next create rather than claimed unverified.
     selection = selectPreparationForCreate(listPreparations(), { ...key, canonicalBase })
     if (selection.kind === 'miss' || selection.kind === 'needs-canonical-base') {
-      return { status: 'miss', reason: 'base_mismatch' }
+      return {
+        status: 'miss',
+        reason: selection.kind === 'miss' ? selection.reason : 'base_mismatch'
+      }
     }
     if (selection.kind === 'retarget' && selection.candidate !== candidate) {
       return { status: 'miss', reason: 'base_mismatch' }

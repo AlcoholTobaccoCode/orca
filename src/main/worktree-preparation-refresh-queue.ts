@@ -4,7 +4,7 @@ import { WorktreePreparationLockOwnershipError } from './git/worktree-preparatio
 import type { PreparationEntry } from './worktree-create-preparation-pool'
 import { waitForPromiseWithSignal } from '../shared/abort-signal-reason'
 
-/** Publish the refresh before yielding so a racing create waits for the same checkout. */
+/** Publish the refresh before yielding so a racing create sees the checkout as not ready. */
 export function queuePreparedWorktreeTipRefresh(
   entry: PreparationEntry,
   retire: () => void,

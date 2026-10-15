@@ -143,7 +143,7 @@ async function prepareWorktreeCreateInBackground(
 
 type ClaimedPreparation =
   | ({ status: 'claimed'; claimedAt: number } & ReservedPreparation)
-  | { status: 'miss'; reason: PreparedCheckoutMissReason; rearm?: () => void }
+  | { status: 'miss'; reason: PreparedCheckoutMissReason }
 
 async function claimPreparedWorktree(
   args: ConsumePreparedWorktreeArgs,
@@ -156,15 +156,9 @@ async function claimPreparedWorktree(
   if (reserved.status === 'miss') {
     return reserved
   }
-  const { entry, reservation } = reserved
-  args.timing?.recordAdoptedPreparation(entry.activity.work)
-  const claimedAt = performance.now()
-  try {
-    await timePhase(args, 'prepared_checkout_wait', () => entry.ready)
-    return { ...reserved, status: 'claimed', claimedAt }
-  } catch {
-    return { status: 'miss', reason: 'prepare_failed', rearm: releaseClaimAfterCreate(reservation) }
-  }
+  // Only a materialized checkout is reserved, so there is no build or refresh left to wait for.
+  args.timing?.recordAdoptedPreparation(reserved.entry.activity.work)
+  return { ...reserved, status: 'claimed', claimedAt: performance.now() }
 }
 
 function startDeferredPreparation(preparation: DeferredPreparation): void {
@@ -255,7 +249,7 @@ async function attemptPreparedWorktreeCreate(
   const options = args.options ?? {}
   const claim = await claimPreparedWorktree(args, options)
   if (claim.status === 'miss') {
-    return { status: 'miss', reason: claim.reason, ...(claim.rearm ? { rearm: claim.rearm } : {}) }
+    return { status: 'miss', reason: claim.reason }
   }
   const { entry, reservation } = claim
   try {

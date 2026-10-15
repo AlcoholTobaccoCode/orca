@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AddWorktreeResult } from './git/worktree'
 
 const mocks = vi.hoisted(() => ({
   mkdir: vi.fn(),
@@ -60,11 +59,6 @@ function prepare() {
   })
 }
 
-/** Lets the claim's own phase settle before the test clock moves on to the wait. */
-function settleClaim(): Promise<void> {
-  return new Promise((resolve) => setImmediate(resolve))
-}
-
 beforeEach(() => {
   mocks.mkdir.mockReset().mockResolvedValue(undefined)
   mocks.prepare.mockReset().mockResolvedValue(undefined)
@@ -81,81 +75,32 @@ afterEach(async () => {
 })
 
 describe('prepared checkout create timing', () => {
-  it('separates the remaining preparation wait from finalization', async () => {
+  it('takes the plain add at once while the prepared checkout is still building', async () => {
     const checkoutStarted = Promise.withResolvers<void>()
     const checkout = Promise.withResolvers<void>()
-    const finalizeStarted = Promise.withResolvers<void>()
-    const finalize = Promise.withResolvers<AddWorktreeResult>()
     mocks.prepare.mockImplementation(() => {
       checkoutStarted.resolve()
       return checkout.promise
-    })
-    mocks.finalize.mockImplementation(() => {
-      finalizeStarted.resolve()
-      return finalize.promise
     })
     const preparation = prepare()
     await checkoutStarted.promise
+    const timing = createWorktreeCreateTimingRecorder(() => 0)
 
-    let now = 40
-    const timing = createWorktreeCreateTimingRecorder(() => now)
-    const create = timing.time('git_worktree_add', () =>
-      consumePreparedWorktreeCreate({ ...request, timing })
-    )
-    await settleClaim()
-    now = 150
-    checkout.resolve()
-    await finalizeStarted.promise
-    now = 180
-    finalize.resolve({})
-
-    expect(await create).toMatchObject({ status: 'hit', retargeted: false, reset: 'none' })
-    await preparation
-    expect(timing.finish()).toEqual({
-      totalDurationMs: 140,
-      preparedCheckout: {
-        status: 'hit',
-        reset: 'none',
-        origin: 'prefetch',
-        buildMs: expect.any(Number),
-        idleMs: 0
-      },
-      phases: [
-        { phase: 'prepared_checkout_claim', startedAtMs: 0, durationMs: 0 },
-        { phase: 'prepared_checkout_wait', startedAtMs: 0, durationMs: 110 },
-        { phase: 'prepared_checkout_finalize', startedAtMs: 110, durationMs: 30 },
-        { phase: 'git_worktree_add', startedAtMs: 0, durationMs: 140 }
-      ]
-    })
-  })
-
-  it('records the wait when preparation fails and the create must fall back', async () => {
-    const checkoutStarted = Promise.withResolvers<void>()
-    const checkout = Promise.withResolvers<void>()
-    mocks.prepare.mockImplementation(() => {
-      checkoutStarted.resolve()
-      return checkout.promise
-    })
-    const preparation = Promise.allSettled([prepare()])
-    await checkoutStarted.promise
-    let now = 0
-    const timing = createWorktreeCreateTimingRecorder(() => now)
-    const create = consumePreparedWorktreeCreate({ ...request, timing })
-    await settleClaim()
-    now = 250
-    checkout.reject(new Error('checkout failed'))
-
-    expect(await create).toEqual({
+    expect(await consumePreparedWorktreeCreate({ ...request, timing })).toEqual({
       status: 'miss',
-      reason: 'prepare_failed',
-      rearm: expect.any(Function)
+      reason: 'not_ready'
     })
-    await preparation
-    expect(timing.finish().phases).toEqual([
-      { phase: 'prepared_checkout_claim', startedAtMs: 0, durationMs: 0 },
-      { phase: 'prepared_checkout_wait', startedAtMs: 0, durationMs: 250 }
-    ])
+    expect(timing.finish()).toMatchObject({
+      phases: [{ phase: 'prepared_checkout_claim', startedAtMs: 0, durationMs: 0 }],
+      preparedCheckout: { status: 'miss', reason: 'not_ready' }
+    })
     expect(mocks.finalize).not.toHaveBeenCalled()
+
+    // The skipped checkout keeps building and serves the next create.
+    checkout.resolve()
+    await preparation
+    expect(await consumePreparedWorktreeCreate(request)).toMatchObject({ status: 'hit' })
+    expect(mocks.prepare).toHaveBeenCalledOnce()
   })
 
   it('times the cleanup of a failed finalization apart from the finalization', async () => {
@@ -178,7 +123,6 @@ describe('prepared checkout create timing', () => {
     })
     expect(timing.finish().phases).toEqual([
       { phase: 'prepared_checkout_claim', startedAtMs: 0, durationMs: 0 },
-      { phase: 'prepared_checkout_wait', startedAtMs: 0, durationMs: 0 },
       { phase: 'prepared_checkout_finalize', startedAtMs: 0, durationMs: 80 },
       { phase: 'prepared_checkout_discard', startedAtMs: 80, durationMs: 20 }
     ])
@@ -282,27 +226,6 @@ describe('prepared checkout create timing', () => {
     expect(attempt).toMatchObject({ status: 'hit', buildMs: 3_000, idleMs: 5_000 })
   })
 
-  it('reports no idle time when the create waited for the build', async () => {
-    let now = 1_000
-    vi.spyOn(performance, 'now').mockImplementation(() => now)
-    const checkoutStarted = Promise.withResolvers<void>()
-    const checkout = Promise.withResolvers<void>()
-    mocks.prepare.mockImplementation(() => {
-      checkoutStarted.resolve()
-      return checkout.promise
-    })
-    const preparation = prepare()
-    await checkoutStarted.promise
-    now = 2_000
-    const create = consumePreparedWorktreeCreate({ ...request })
-    await settleClaim()
-    now = 6_000
-    checkout.resolve()
-    await preparation
-
-    expect(await create).toMatchObject({ status: 'hit', buildMs: 5_000, idleMs: 0 })
-  })
-
   it('counts a building prepared checkout against other creates but not the one that used it', async () => {
     const checkoutStarted = Promise.withResolvers<void>()
     const checkout = Promise.withResolvers<void>()
@@ -315,13 +238,13 @@ describe('prepared checkout create timing', () => {
     await checkoutStarted.promise
     const inFlight = beginWorktreeCreate()
     const timing = createWorktreeCreateTimingRecorder(undefined, inFlight)
-
-    const create = consumePreparedWorktreeCreate({ ...request, timing })
-    await settleClaim()
     checkout.resolve()
     await preparation
 
-    expect(await create).toMatchObject({ status: 'hit', origin: 'prefetch' })
+    expect(await consumePreparedWorktreeCreate({ ...request, timing })).toMatchObject({
+      status: 'hit',
+      origin: 'prefetch'
+    })
     expect(inFlight.end().preparations).toBe(0)
     expect(bystander.end().preparations).toBe(1)
   })

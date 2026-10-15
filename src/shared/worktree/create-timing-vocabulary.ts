@@ -6,6 +6,7 @@ export const WORKTREE_CREATE_PHASES = [
   'git_worktree_add',
   /** Picking and reserving a prepared checkout: base probe and drift check included. */
   'prepared_checkout_claim',
+  /** Not recorded since a create claims only a finished checkout; left in the event schema. */
   'prepared_checkout_wait',
   'prepared_checkout_finalize',
   /** Removing a prepared checkout whose finalize failed, before the plain add runs. */
@@ -41,6 +42,10 @@ export const PREPARED_CHECKOUT_MISS_REASONS = [
   'retarget_unverifiable',
   'workspace_root_mismatch',
   'wsl_distro_mismatch',
+  /** A matching checkout was still building or refreshing its tip; the create took the plain add
+   *  instead of waiting for it. */
+  'not_ready',
+  /** Not produced since a create claims only a finished checkout; left in the event schema. */
   'prepare_failed',
   'finalize_failed',
   'checkout_existing_branch',

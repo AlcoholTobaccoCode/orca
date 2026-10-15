@@ -20,7 +20,7 @@ export type WorktreeCreateConcurrency = {
 }
 
 export type WorktreeCreateInFlightHandle = {
-  /** Leaves `work` out of this create's count: it is the prepared checkout this create waits on. */
+  /** Leaves `work` out of this create's count: it is the prepared checkout this create used. */
   adoptPreparation(work: PreparationWork): void
   /** Ends this create's membership; later calls return the same counts. */
   end(): WorktreeCreateConcurrency

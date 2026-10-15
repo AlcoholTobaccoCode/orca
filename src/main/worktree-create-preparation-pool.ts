@@ -58,7 +58,10 @@ export type PreparationEntry = {
   lockReason: string
   options: AddWorktreeOptions
   createdAt: number
+  /** The checkout's latest build or tip refresh. */
   ready: Promise<void>
+  /** That work finished successfully; only then may a create claim the checkout. */
+  materialized: boolean
   expiration: NodeJS.Timeout
   controller: AbortController
   checkoutStarted: boolean
@@ -177,6 +180,20 @@ export function startPreparation(
   return worktreePreparationGit.run(() => startBackgroundPreparation({ ...args, kind }))
 }
 
+/** A tip refresh is disk work again, so the checkout stays unclaimable until it settles. */
+function publishPreparationWork(entry: PreparationEntry, ready: Promise<void>): void {
+  entry.materialized = false
+  entry.activity.track(ready)
+  void ready.then(
+    () => {
+      if (entry.ready === ready) {
+        entry.materialized = true
+      }
+    },
+    () => {}
+  )
+}
+
 function refreshPreparationTip(
   entry: PreparationEntry,
   beforeMaterialization: Promise<void>
@@ -196,7 +213,7 @@ function refreshPreparationTip(
     },
     beforeMaterialization
   )
-  entry.activity.track(ready)
+  publishPreparationWork(entry, ready)
   return ready
 }
 
@@ -242,7 +259,8 @@ function startBackgroundPreparation({
     controller,
     checkoutStarted: false,
     activity: createPreparationActivity(kind),
-    ready: Promise.resolve()
+    ready: Promise.resolve(),
+    materialized: false
   }
   entry.ready = (async () => {
     await startStalePreparationCleanup(
@@ -272,7 +290,7 @@ function startBackgroundPreparation({
     }
   })()
   preparations.set(key, entry)
-  entry.activity.track(entry.ready)
+  publishPreparationWork(entry, entry.ready)
   void entry.ready.catch(() => {
     if (preparations.get(key) === entry) {
       preparations.delete(key)

@@ -12,6 +12,7 @@ export type PreparationSelectionMissReason = Extract<
   | 'base_mismatch'
   | 'workspace_root_mismatch'
   | 'wsl_distro_mismatch'
+  | 'not_ready'
 >
 
 export type PreparationCandidate = {
@@ -23,6 +24,8 @@ export type PreparationCandidate = {
   /** That base after `resolveWorktreeAddBaseRef`, so `main` and `refs/heads/main` compare equal. */
   canonicalBase: string
   createdAt: number
+  /** Its latest build or tip refresh has finished; a create never waits for one. */
+  materialized: boolean
 }
 
 export type PreparationRequest = {
@@ -76,6 +79,8 @@ export type PreparationSelection<T> =
  * The bound matters: refs outside the same branch family are rejected, because a retarget across
  * unrelated history degenerates into a full checkout and wins nothing.
  *
+ * Only a materialized checkout is claimable, so a create never waits on a build or tip refresh.
+ *
  * Synchronous on purpose: the caller claims the returned entry in the same run, so two concurrent
  * creates cannot both walk away with the same prepared checkout.
  */
@@ -103,23 +108,48 @@ export function selectPreparationForCreate<T extends PreparationCandidate>(
     return { kind: 'miss', reason: 'workspace_root_mismatch' }
   }
 
+  const selection = selectByBase(
+    sameRoot.filter((candidate) => candidate.materialized),
+    request
+  )
+  if (selection.kind !== 'miss') {
+    return selection
+  }
+  // Nothing claimable matches; a match that is still building is reported as its own miss.
+  const unready = selectByBase(sameRoot, request)
+  if (unready.kind === 'miss') {
+    return selection
+  }
+  if (unready.kind === 'needs-canonical-base') {
+    return unready
+  }
+  return { kind: 'miss', reason: 'not_ready' }
+}
+
+function selectByBase<T extends PreparationCandidate>(
+  candidates: readonly T[],
+  request: PreparationRequest
+): PreparationSelection<T> {
+  if (candidates.length === 0) {
+    return { kind: 'miss', reason: 'base_mismatch' }
+  }
   const { canonicalBase } = request
   if (canonicalBase === null) {
-    const rawMatch = sameRoot.find((candidate) => candidate.baseBranch === request.baseBranch)
+    const rawMatch = candidates.find((candidate) => candidate.baseBranch === request.baseBranch)
     // Same spelling, so the armed entry already holds this request's canonical form.
     return rawMatch
       ? { kind: 'exact', candidate: rawMatch, canonicalBase: rawMatch.canonicalBase }
       : { kind: 'needs-canonical-base' }
   }
 
-  const canonicalMatch = sameRoot.find((candidate) => candidate.canonicalBase === canonicalBase)
+  const canonicalMatch = candidates.find((candidate) => candidate.canonicalBase === canonicalBase)
   if (canonicalMatch) {
     return { kind: 'exact', candidate: canonicalMatch, canonicalBase }
   }
 
   const family = worktreeBaseRefFamily(canonicalBase)
   if (family) {
-    const retarget = sameRoot
+    const retarget = candidates
       .filter((candidate) => worktreeBaseRefFamily(candidate.canonicalBase) === family)
       .sort((left, right) => right.createdAt - left.createdAt)[0]
     if (retarget) {

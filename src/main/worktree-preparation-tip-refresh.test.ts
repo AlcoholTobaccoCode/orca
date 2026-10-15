@@ -39,23 +39,6 @@ describe('prepared checkout tip refresh', () => {
     )
   })
 
-  it('lets consume join an in-flight refresh before finalizing', async () => {
-    await prepareWorktreeCreateForRepo(store, repo, 'origin/main')
-    let release!: () => void
-    mocks.refreshTip.mockImplementationOnce(
-      () => new Promise<void>((resolve) => (release = resolve))
-    )
-    const refresh = prepareWorktreeCreateForRepo(store, repo, 'origin/main', beforeMaterialization)
-    await vi.waitFor(() => expect(mocks.refreshTip).toHaveBeenCalledOnce())
-    const create = consume()
-    await flushBackgroundWork()
-    expect(mocks.finalize).not.toHaveBeenCalled()
-    release()
-    await refresh
-    expect(await create).toMatchObject({ status: 'hit' })
-    expect(mocks.finalize).toHaveBeenCalledOnce()
-  })
-
   it('defers another preparation while the previous checkout is still claimed', async () => {
     await prepareWorktreeCreateForRepo(store, repo, 'origin/main')
     expect(await consume()).toMatchObject({ status: 'hit' })
@@ -145,7 +128,7 @@ describe('prepared checkout tip refresh', () => {
     expect(await consume()).toMatchObject({ status: 'miss', reason: 'none_armed' })
   })
 
-  it('serializes successive fetched tips and lets consume wait for the newest queued refresh', async () => {
+  it('serializes successive fetched tips before a create can claim the checkout', async () => {
     await prepareWorktreeCreateForRepo(store, repo, 'origin/main')
     const order: string[] = []
     let release!: () => void
@@ -170,58 +153,26 @@ describe('prepared checkout tip refresh', () => {
     await vi.waitFor(() => expect(mocks.refreshTip).toHaveBeenCalledOnce())
     const second = prepareWorktreeCreateForRepo(store, repo, 'origin/main', beforeMaterialization)
     await flushBackgroundWork()
-    const create = consume()
-    await flushBackgroundWork()
+    expect(await consume()).toMatchObject({ status: 'miss', reason: 'not_ready' })
     expect(mocks.refreshTip).toHaveBeenCalledOnce()
-    expect(mocks.finalize).not.toHaveBeenCalled()
     release()
-    const results = await Promise.all([first, second, create])
-    expect(results[2]).toMatchObject({ status: 'hit' })
+    await Promise.all([first, second])
+    expect(await consume()).toMatchObject({ status: 'hit' })
     expect(order).toEqual(['first-tip', 'second-tip', 'finalize'])
     expect(mocks.prepareCheckout).toHaveBeenCalledOnce()
   })
 
-  it('discards a claimed checkout once when successive queued refreshes fail', async () => {
+  it('discards a checkout once when successive queued refreshes fail', async () => {
     await prepareWorktreeCreateForRepo(store, repo, 'origin/main')
-    let rejectRefresh = (_error: Error) => {}
-    mocks.refreshTip.mockImplementationOnce(
-      () =>
-        new Promise<void>((_resolve, reject) => {
-          rejectRefresh = reject
-        })
-    )
-    const first = prepareWorktreeCreateForRepo(store, repo, 'origin/main', beforeMaterialization)
-    await vi.waitFor(() => expect(mocks.refreshTip).toHaveBeenCalledOnce())
-    const second = prepareWorktreeCreateForRepo(store, repo, 'origin/main', beforeMaterialization)
+    mocks.refreshTip.mockRejectedValueOnce(new Error('first tip reset failed'))
+    const settled = Promise.allSettled([
+      prepareWorktreeCreateForRepo(store, repo, 'origin/main', beforeMaterialization),
+      prepareWorktreeCreateForRepo(store, repo, 'origin/main', beforeMaterialization)
+    ])
+    expect((await settled).map((result) => result.status)).toEqual(['rejected', 'rejected'])
     await flushBackgroundWork()
-    const create = consume()
-    const settled = Promise.allSettled([first, second])
-    await flushBackgroundWork()
-    const finishes: (() => void)[] = []
-    mocks.discard.mockImplementation(
-      () =>
-        new Promise<void>((resolve) => {
-          finishes.push(resolve)
-        })
-    )
-    rejectRefresh(new Error('first tip reset failed'))
-    await settled
-    const attempt = await create
-    expect(attempt).toMatchObject({ status: 'miss', reason: 'prepare_failed' })
-    await vi.waitFor(() => expect(mocks.discard).toHaveBeenCalled())
-    await flushBackgroundWork()
-    try {
-      expect(mocks.discard).toHaveBeenCalledOnce()
-      expect(mocks.finalize).not.toHaveBeenCalled()
-    } finally {
-      for (const finish of finishes) {
-        finish()
-      }
-      if (attempt.status === 'miss') {
-        attempt.rearm?.()
-      }
-      await flushBackgroundWork()
-    }
+    expect(mocks.discard).toHaveBeenCalledOnce()
+    expect(await consume()).toMatchObject({ status: 'miss', reason: 'none_armed' })
   })
 })
 

@@ -97,27 +97,15 @@ afterEach(async () => {
 })
 
 describe('claimed worktree preparation', () => {
-  it('defers prefetch through checkout, finalization, and the remaining create work', async () => {
-    const checkout = Promise.withResolvers<void>()
-    const checkoutStarted = Promise.withResolvers<void>()
+  it('defers prefetch through finalization and the remaining create work', async () => {
     const finalize = Promise.withResolvers<AddWorktreeResult>()
     const finalizeStarted = Promise.withResolvers<void>()
-    mocks.prepare.mockImplementationOnce(() => {
-      checkoutStarted.resolve()
-      return checkout.promise
-    })
     mocks.finalize.mockImplementationOnce(() => {
       finalizeStarted.resolve()
       return finalize.promise
     })
-    const preparation = prepareWorktreeCreateForRepo(store, repo, 'origin/main')
-    await checkoutStarted.promise
-    const create = consume()
     await prepareWorktreeCreateForRepo(store, repo, 'origin/main')
-    expect(mocks.prepare).toHaveBeenCalledTimes(1)
-
-    checkout.resolve()
-    await preparation
+    const create = consume()
     await finalizeStarted.promise
     await prepareWorktreeCreateForRepo(store, repo, 'origin/main')
     expect(mocks.prepare).toHaveBeenCalledTimes(1)
@@ -336,31 +324,6 @@ describe('claimed worktree preparation', () => {
     expect(result).toMatchObject({ status: 'miss', reason: 'finalize_failed' })
     expect(mocks.discard).toHaveBeenCalledTimes(1)
     await flushBackgroundWork()
-    expect(mocks.prepare).toHaveBeenCalledTimes(1)
-    result.rearm?.()
-    await flushBackgroundWork()
-    expect(mocks.prepare).toHaveBeenCalledTimes(2)
-  })
-
-  it('holds an explicit prefetch through a claimed checkout failure', async () => {
-    let failPreparation!: (error: Error) => void
-    mocks.prepare.mockReturnValueOnce(
-      new Promise((_resolve, reject) => {
-        failPreparation = reject
-      })
-    )
-    const initialPreparation = prepareWorktreeCreateForRepo(store, repo, 'origin/main')
-    const preparationFailure = initialPreparation.catch(() => {})
-    await flushBackgroundWork()
-    const create = consume()
-    await flushBackgroundWork()
-    await prepareWorktreeCreateForRepo(store, repo, 'origin/main')
-    expect(mocks.prepare).toHaveBeenCalledTimes(1)
-
-    failPreparation(new Error('checkout failed'))
-    const result = await create
-    await preparationFailure
-    expect(result).toMatchObject({ status: 'miss', reason: 'prepare_failed' })
     expect(mocks.prepare).toHaveBeenCalledTimes(1)
     result.rearm?.()
     await flushBackgroundWork()

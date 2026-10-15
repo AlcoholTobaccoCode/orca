@@ -49,7 +49,6 @@ vi.mock('./ipc/worktree-logic', async (importOriginal) => ({
 
 import {
   _resetWorktreeCreatePreparationsForTests,
-  consumePreparedWorktreeCreate,
   prepareWorktreeCreateForRepo
 } from './worktree-create-preparation'
 
@@ -185,34 +184,6 @@ describe('worktree create preparation cancellation', () => {
     expect(mocks.prepareCheckout).toHaveBeenCalledTimes(3)
     await flushBackgroundWork()
     expect(mocks.discard).not.toHaveBeenCalled()
-  })
-
-  it('keeps a claimed in-flight checkout alive when new preparations fill the pool', async () => {
-    let signal: AbortSignal | undefined
-    let finishCheckout!: () => void
-    mocks.prepareCheckout.mockImplementationOnce((_repo, _path, _base, _lock, options) => {
-      signal = options.signal
-      return new Promise<void>((resolve) => {
-        finishCheckout = resolve
-      })
-    })
-    const preparation = prepareWorktreeCreateForRepo(store, repo, 'origin/main')
-    await flushBackgroundWork()
-    const create = consumePreparedWorktreeCreate({
-      repoPath: repo.path,
-      workspaceRoot: '/workspace',
-      worktreePath: '/workspace/claimed',
-      branch: 'claimed',
-      baseBranch: 'origin/main'
-    })
-    await flushBackgroundWork()
-    for (const base of ['origin/one', 'origin/two', 'origin/three', 'origin/four']) {
-      await prepareWorktreeCreateForRepo(store, repo, base)
-    }
-    expect(signal?.aborted).toBe(false)
-    finishCheckout()
-    await preparation
-    expect(await create).toMatchObject({ status: 'hit' })
   })
 
   it('cancels an expired in-flight checkout', async () => {
