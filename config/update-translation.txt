@@ -241,7 +241,10 @@ Method (reproducible):
   unresponsiveSummary). R2 applied 4 zh (browse sort.ahead/behind, chip.kind.review/
   reviewState). R3 applied 2 zh (preparingSummary "before restarting" fidelity,
   blockerModeAny grammar); es/fr/ja/ko signed off clean. R4 applied 3 zh (AccountsPane
-  cluster); no other locale needed a 4th round.
+  cluster); no other locale needed a 4th round. Post-review addressed 2 CodeRabbit
+  threads: ko palette "actions" -> 동작 (distinct from tasks 작업), and the zh DevTools
+  filter phrase clarified to `任意包含 remains 的请求` (the literal `remains` stays — it is
+  the request name users filter for, per `87f814af6f`).
 - Remaining out-of-delta findings for a future pass (pre-existing, not from this window):
   ja/zh/fr settings search-alias MT (ja トゥイ/アンシ, グーグル/クロム/リナックス/…; fr
   worktree->arbre de travail, board->conseil, remote->télécommande; zh `网络`->任一 remains
