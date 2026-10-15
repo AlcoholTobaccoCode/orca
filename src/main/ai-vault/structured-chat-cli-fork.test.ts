@@ -29,7 +29,9 @@ function install(record: AgentSessionRecord, copy = vi.fn()) {
 afterEach(async () => {
   setStructuredAgentSessionHost(null)
   prepare.mockClear()
-  if (root) await rm(root, { recursive: true, force: true })
+  if (root) {
+    await rm(root, { recursive: true, force: true })
+  }
   root = undefined
 })
 
@@ -117,14 +119,13 @@ it('uses the Pi file handle and refuses a mismatched saved header or missing han
   ]
   await writeFile(
     filePath,
-    JSON.stringify({ type: 'session', id: '12345678-abcd-1234-abcd-123456789abc', cwd: root }) +
-      '\n'
+    `${JSON.stringify({ type: 'session', id: '12345678-abcd-1234-abcd-123456789abc', cwd: root })}\n`
   )
   install(record)
   await expect(prepareStructuredChatCliFork(request, prepare)).resolves.toMatchObject({
     cliForkSource: { filePath, sessionId: '12345678-abcd-1234-abcd-123456789abc' }
   })
-  await writeFile(filePath, JSON.stringify({ type: 'session', id: 'wrong', cwd: root }) + '\n')
+  await writeFile(filePath, `${JSON.stringify({ type: 'session', id: 'wrong', cwd: root })}\n`)
   await expect(prepareStructuredChatCliFork(request, prepare)).rejects.toThrow('does not match')
   record.providerHandleChain = []
   await expect(prepareStructuredChatCliFork(request, prepare)).rejects.toThrow(

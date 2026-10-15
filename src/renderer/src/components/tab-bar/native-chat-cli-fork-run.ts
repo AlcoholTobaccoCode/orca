@@ -53,12 +53,16 @@ export async function runNativeChatCliFork(args: {
 }): Promise<void> {
   const { subject, tab } = args
   const key = keyFor(subject)
-  if (pending.has(key)) return
+  if (pending.has(key)) {
+    return
+  }
   const host = parseExecutionHostId(subject.request.executionHostScope)
   const owner = host?.kind === 'runtime' ? captureWebSessionIntentOwner(host.environmentId) : null
   const controller = new AbortController()
   const isCurrent = () => {
-    if (controller.signal.aborted || (owner && !matchesWebSessionIntentOwner(owner))) return false
+    if (controller.signal.aborted || (owner && !matchesWebSessionIntentOwner(owner))) {
+      return false
+    }
     const state = useAppStore.getState()
     const source = state.unifiedTabsByWorktree[tab.worktreeId]?.find((item) => item.id === tab.id)
     const current =
@@ -73,7 +77,9 @@ export async function runNativeChatCliFork(args: {
       current.request.executionHostScope === subject.request.executionHostScope
     )
   }
-  if (!isCurrent()) return
+  if (!isCurrent()) {
+    return
+  }
   const release = () => {
     if (pending.get(key) === controller) {
       pending.delete(key)
@@ -87,10 +93,14 @@ export async function runNativeChatCliFork(args: {
   pending.set(key, controller)
   changed()
   const stopSource = useAppStore.subscribe(() => {
-    if (!isCurrent()) abandon()
+    if (!isCurrent()) {
+      abandon()
+    }
   })
   const retire = (ids: readonly string[]) => {
-    if (owner && ids.includes(owner.environmentId)) abandon()
+    if (owner && ids.includes(owner.environmentId)) {
+      abandon()
+    }
   }
   const stopRetirement = onRuntimeEnvironmentsRetired(retire)
   const stopRevision = onRuntimeEnvironmentRevisionsChanged(retire)
@@ -108,7 +118,9 @@ export async function runNativeChatCliFork(args: {
       prepareNativeChatCliFork(subject, { pairingRevision: owner?.pairingRevision, isCurrent }),
       controller.signal
     )
-    if (!isCurrent()) return
+    if (!isCurrent()) {
+      return
+    }
     const target = prepared.session
     const startupArgs = {
       state: useAppStore.getState(),
@@ -120,9 +132,13 @@ export async function runNativeChatCliFork(args: {
     const startup = prepared.copied
       ? buildAiVaultCopiedSessionStartupForWorktree(startupArgs, prepared.sourceAgent ?? args.agent)
       : buildAiVaultForkStartupForWorktree(startupArgs)
-    if (!startup) throw new Error('This session cannot be opened in the CLI.')
+    if (!startup) {
+      throw new Error('This session cannot be opened in the CLI.')
+    }
     // The destination takes over synchronously; closing the source afterward must not cancel it.
-    if (!isCurrent()) return
+    if (!isCurrent()) {
+      return
+    }
     stop()
     clearTimeout(timer)
     const launch = launchAiVaultSessionInNewTab({
@@ -132,7 +148,9 @@ export async function runNativeChatCliFork(args: {
     })
     if (launch.tabId === null) {
       const outcome = await launch.runtimeLaunch
-      if (outcome.status === 'failed') throw new Error(outcome.message)
+      if (outcome.status === 'failed') {
+        throw new Error(outcome.message)
+      }
     }
     notifyAiVaultSessionQueued(target.agent)
   } catch (error) {

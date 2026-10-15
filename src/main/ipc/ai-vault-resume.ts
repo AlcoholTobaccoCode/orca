@@ -41,7 +41,9 @@ export async function prepareAiVaultSessionResume(
   }
   if ('sourceChat' in args) {
     const parsed = AiVaultPrepareSessionResumeParams.parse(args)
-    if (!('sourceChat' in parsed)) throw new Error('Invalid chat source.')
+    if (!('sourceChat' in parsed)) {
+      throw new Error('Invalid chat source.')
+    }
     if (executionHost?.kind === 'ssh') {
       throw new Error('This chat cannot be copied on this host.')
     }

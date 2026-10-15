@@ -25,7 +25,9 @@ export function NativeChatCliForkMenuItems({
   const pending = useNativeChatCliForkPending(chat)
   const commandOverrides = useAppStore((state) => state.settings?.agentCmdOverrides)
   const agent = AI_VAULT_AGENTS.find((candidate) => candidate === nativeChat.agent)
-  if (!chat || !agent) return null
+  if (!chat || !agent) {
+    return null
+  }
   return (
     <>
       {leadingSeparator ? <DropdownMenuSeparator /> : null}
