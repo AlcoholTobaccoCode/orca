@@ -13,6 +13,15 @@ import {
 import { WorktreeCardPortsDetails, WorktreeCardPortsTrigger } from './WorktreeCardPorts'
 import type { WorktreeCardController } from './use-worktree-card-controller'
 
+function getVisibleContextLabel(
+  projectLabel: string | undefined,
+  hostLabel: string | undefined,
+  showHost: boolean
+): string | undefined {
+  const labels = [projectLabel, showHost ? hostLabel : undefined].filter(Boolean)
+  return labels.length > 0 ? labels.join(' · ') : undefined
+}
+
 export function buildWorktreeCardPresentation(card: WorktreeCardController) {
   const {
     worktree,
@@ -20,6 +29,7 @@ export function buildWorktreeCardPresentation(card: WorktreeCardController) {
     inPinnedSection,
     hideRepoBadge,
     hostContextLabel,
+    projectContextLabel,
     affiliateListMode,
     flushSurface,
     contentIndent,
@@ -84,7 +94,12 @@ export function buildWorktreeCardPresentation(card: WorktreeCardController) {
     showRepoIdentityInTitle && !!repo && !hideRepoBadge && !isFolder && !showPinnedRepoIcon
   const showRepoBadgeInMetaRow =
     !showRepoIdentityInTitle && !!repo && !hideRepoBadge && !showPinnedRepoIcon
-  const showHostContextBadge = !compactCards && !!hostContextLabel && cardProps.includes('host')
+  const contextLabel = getVisibleContextLabel(
+    projectContextLabel,
+    hostContextLabel,
+    cardProps.includes('host')
+  )
+  const showHostContextBadge = !!contextLabel && (!compactCards || !!projectContextLabel)
   const showDetachedHeadInMetaRow = !compactCards && !isFolder && detachedHeadDisplay !== null
   const showBranch =
     !isFolder &&
@@ -114,7 +129,7 @@ export function buildWorktreeCardPresentation(card: WorktreeCardController) {
     showMetaRowDetails
   )
   const hasMetaRow = compactCards
-    ? hasMetadataBadge || cacheStartedAt != null
+    ? hasMetadataBadge || cacheStartedAt != null || !!projectContextLabel
     : hasDetailedMetaRowContent
   const showHeaderActions = showTitleRowPrimary || showDeleteQuickAction
   // Why: normalize the title once so title/branch de-dupe and identity-only hover eligibility stay in sync.
@@ -246,6 +261,7 @@ export function buildWorktreeCardPresentation(card: WorktreeCardController) {
     showInlineRepoBadge,
     showRepoBadgeInMetaRow,
     showHostContextBadge,
+    contextLabel,
     showIdentityInNewCard,
     showDetachedHeadInMetaRow,
     showBranch,

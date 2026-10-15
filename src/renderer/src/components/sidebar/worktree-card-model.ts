@@ -24,6 +24,7 @@ export type WorktreeCardProps = {
   selectedWorktrees?: readonly Worktree[]
   hideRepoBadge?: boolean
   hostContextLabel?: string
+  projectContextLabel?: string
   inPinnedSection?: boolean
   activationRowKey?: string
   renameRowKey?: string

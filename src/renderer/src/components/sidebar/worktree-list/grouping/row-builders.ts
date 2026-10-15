@@ -4,6 +4,8 @@ import type { Worktree } from '../../../../../../shared/worktree/types'
 import { getWorktreeHostIdentity } from '../../../../../../shared/worktree/host-qualified-identity'
 import { getSidebarLineageParent } from '../../worktree-lineage-projection'
 import { getWorktreeLineageGroupKey } from './group-keys'
+import type { ProjectGroupingIndex } from '../../../../../../shared/project-section-grouping'
+import { getWorktreeProjectContextLabel } from './worktree-project-context'
 import type { NoticeHostContext } from './host-labels'
 import type { RenderableFolderWorkspace } from './folder-workspace-lanes'
 import type {
@@ -75,6 +77,7 @@ function buildWorktreeRow(
     lineageChildCount: number
     lineageCollapsed: boolean
     hostContextLabel?: string
+    projectContextLabel?: string
   }
 ): WorktreeRow {
   return {
@@ -89,6 +92,7 @@ function buildWorktreeRow(
     isLastLineageChild: options.isLastLineageChild,
     lineageChildCount: options.lineageChildCount,
     ...(options.hostContextLabel ? { hostContextLabel: options.hostContextLabel } : {}),
+    ...(options.projectContextLabel ? { projectContextLabel: options.projectContextLabel } : {}),
     ...(options.lineageChildCount > 0
       ? { lineageGroupKey: getWorktreeLineageGroupKey(worktree) }
       : {}),
@@ -109,6 +113,8 @@ export function appendWorktreeRows(
     sectionKey: string
     hostContextLabelByRepoId?: ReadonlyMap<string, string>
     hostContextLabelByWorktreeIdentity?: ReadonlyMap<string, string>
+    projectIndex?: ProjectGroupingIndex | null
+    lineageRowsByIdentity?: ReadonlyMap<string, Worktree>
     cyclicLineageIds: ReadonlySet<string>
   }
 ): void {
@@ -119,8 +125,13 @@ export function appendWorktreeRows(
     sectionKey,
     hostContextLabelByRepoId,
     hostContextLabelByWorktreeIdentity,
+    projectIndex,
+    lineageRowsByIdentity,
     cyclicLineageIds
   } = options
+  const projectParents =
+    lineageRowsByIdentity ??
+    new Map(worktrees.map((worktree) => [getWorktreeHostIdentity(worktree), worktree]))
   if (!nestLineage) {
     for (const worktree of worktrees) {
       result.push(
@@ -135,7 +146,15 @@ export function appendWorktreeRows(
           lineageCollapsed: false,
           hostContextLabel:
             hostContextLabelByWorktreeIdentity?.get(getWorktreeHostIdentity(worktree)) ??
-            hostContextLabelByRepoId?.get(worktree.repoId)
+            hostContextLabelByRepoId?.get(worktree.repoId),
+          projectContextLabel: getWorktreeProjectContextLabel(
+            worktree,
+            repoMap,
+            projectIndex,
+            lineageById,
+            projectParents,
+            cyclicLineageIds
+          )
         })
       )
     }
@@ -195,7 +214,15 @@ export function appendWorktreeRows(
           lineageCollapsed,
           hostContextLabel:
             hostContextLabelByWorktreeIdentity?.get(worktreeIdentity) ??
-            hostContextLabelByRepoId?.get(worktree.repoId)
+            hostContextLabelByRepoId?.get(worktree.repoId),
+          projectContextLabel: getWorktreeProjectContextLabel(
+            worktree,
+            repoMap,
+            projectIndex,
+            lineageById,
+            projectParents,
+            cyclicLineageIds
+          )
         })
       )
       if (lineageCollapsed) {

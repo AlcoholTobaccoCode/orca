@@ -82,6 +82,7 @@ describe('recent project rank scan budget', () => {
       noticeHostContextLabelByRepoId: undefined,
       lineageById: {},
       worktreeMap: new Map(),
+      lineageRowsByIdentity: new Map(),
       nestLineage: false,
       cyclicLineageIds: new Set()
     }

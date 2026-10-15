@@ -102,6 +102,7 @@ export function computeVisibleWorktrees(
   // Why: sidebar lineage is structural. Archived workspaces stay hidden, but
   // every other valid ancestor can bypass filters so children never orphan.
   const lineageAncestorById = getLineageAncestorIndex(worktreesByRepo)
+  const selectedRepoIds = opts.filterRepoIds.length > 0 ? new Set(opts.filterRepoIds) : null
 
   if (opts.hideWorkspacesFromOtherDevices) {
     all = all.filter(
@@ -141,8 +142,7 @@ export function computeVisibleWorktrees(
   }
 
   // Filter by repo
-  if (opts.filterRepoIds.length > 0) {
-    const selectedRepoIds = new Set(opts.filterRepoIds)
+  if (selectedRepoIds) {
     all = all.filter((w) => selectedRepoIds.has(w.repoId))
   }
 
@@ -178,7 +178,12 @@ export function computeVisibleWorktrees(
   // worktrees before the next sortEpoch bump) are appended at the end.
   // Manual placement belongs to the parent, even when a hidden child has a higher rank.
   if (opts.injectLineageAncestors !== false && opts.preserveLineageParentOrder) {
-    all = addVisibleLineageAncestors(all, lineageAncestorById, opts.worktreeLineageById)
+    all = addVisibleLineageAncestors(
+      all,
+      lineageAncestorById,
+      opts.worktreeLineageById,
+      selectedRepoIds
+    )
   }
   const orderIndex = getSortedWorktreeRankIndex(sortedIds)
   all.sort((a, b) => {
@@ -189,13 +194,19 @@ export function computeVisibleWorktrees(
 
   return opts.injectLineageAncestors === false || opts.preserveLineageParentOrder
     ? all
-    : addVisibleLineageAncestors(all, lineageAncestorById, opts.worktreeLineageById)
+    : addVisibleLineageAncestors(
+        all,
+        lineageAncestorById,
+        opts.worktreeLineageById,
+        selectedRepoIds
+      )
 }
 
 function addVisibleLineageAncestors(
   worktrees: Worktree[],
   worktreeById: Map<string, Worktree>,
-  lineageById: Record<string, WorktreeLineage>
+  lineageById: Record<string, WorktreeLineage>,
+  selectedRepoIds: ReadonlySet<string> | null
 ): Worktree[] {
   const result: Worktree[] = []
   const included = new Set<string>()
@@ -209,9 +220,12 @@ function addVisibleLineageAncestors(
     }
     visiting.add(identity)
     const lineage = getLineageRenderInfo(worktree, lineageById, worktreeById, cyclicLineageIds)
-    if (lineage.state === 'valid') {
-      // Why: sidebar lineage is structural. If a filtered child is visible,
-      // its valid parent must be rendered too so the hierarchy remains legible.
+    if (
+      lineage.state === 'valid' &&
+      (!selectedRepoIds || selectedRepoIds.has(lineage.parent.repoId))
+    ) {
+      // Why: a repository filter is an explicit boundary; other filters keep
+      // valid ancestors so visible children retain their hierarchy.
       addWithAncestors(lineage.parent)
     }
     visiting.delete(identity)

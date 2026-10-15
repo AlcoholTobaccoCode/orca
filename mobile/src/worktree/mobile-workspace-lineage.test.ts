@@ -3,7 +3,7 @@ import {
   applyMobileWorkspaceLineage,
   getMobileWorkspaceLineageGroupKey
 } from './mobile-workspace-lineage'
-import type { Worktree } from './workspace-list-sections'
+import { buildSections, NO_PROJECT_SECTION_CATALOG, type Worktree } from './workspace-list-sections'
 
 function worktree(overrides: Partial<Worktree> = {}): Worktree {
   return {
@@ -26,15 +26,71 @@ function worktree(overrides: Partial<Worktree> = {}): Worktree {
 }
 
 describe('applyMobileWorkspaceLineage', () => {
-  it('places visible children directly under their parent', () => {
+  it('follows a visible parent across projects while preserving ownership and project filters', () => {
+    const parent = worktree({ worktreeId: 'parent' })
+    const child = worktree({
+      worktreeId: 'child',
+      repoId: 'repo-2',
+      repo: 'Backend',
+      parentWorktreeId: 'parent'
+    })
+    const filters = {
+      filterRepoIds: new Set<string>(),
+      hideSleeping: false,
+      hideDefaultBranch: false
+    }
+    const catalog = {
+      ...NO_PROJECT_SECTION_CATALOG,
+      repos: [
+        { id: 'repo-1', displayName: 'orca', path: '/repos/orca' },
+        { id: 'repo-2', displayName: 'Backend', path: '/repos/backend' }
+      ]
+    }
+    const sections = buildSections([child, parent], 'name', filters, '', 'repo', new Set(), catalog)
+    expect(
+      sections.map((section) => [
+        section.key,
+        section.data.map((row) => [row.worktreeId, row.repoId, row.lineageDepth])
+      ])
+    ).toEqual([
+      [
+        'repo:repo-1',
+        [
+          ['parent', 'repo-1', 0],
+          ['child', 'repo-2', 1]
+        ]
+      ]
+    ])
+    const filtered = buildSections(
+      [child, parent],
+      'name',
+      { ...filters, filterRepoIds: new Set(['repo-2']) },
+      '',
+      'repo',
+      new Set(),
+      catalog
+    )
+    expect(
+      filtered.map((section) => [
+        section.key,
+        section.data.map((row) => [row.worktreeId, row.repoId, row.lineageDepth])
+      ])
+    ).toEqual([['repo:repo-2', [['child', 'repo-2', 0]]]])
+  })
+
+  it('places a visible child from another project under its same-host parent', () => {
     const parent = worktree({
       worktreeId: 'parent',
       displayName: 'parent',
+      hostId: 'local',
       worktreeInstanceId: 'parent-instance'
     })
     const child = worktree({
       worktreeId: 'child',
       displayName: 'child',
+      repoId: 'repo-2',
+      repo: 'Backend',
+      hostId: 'local',
       parentWorktreeId: 'parent',
       worktreeInstanceId: 'child-instance',
       lineageWorktreeInstanceId: 'child-instance',

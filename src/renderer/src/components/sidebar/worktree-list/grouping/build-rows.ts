@@ -22,7 +22,11 @@ import {
 import { buildProjectGroupingIndex } from '../../../../../../shared/project-section-grouping'
 import type { ProjectGroupingModel } from '../../../../../../shared/project-section-grouping'
 import { appendProjectGroupSections } from './project-group-sections'
-import { getPinnedSectionWorktrees } from '../../pinned-section-worktrees'
+import {
+  getPinnedSectionWorktrees,
+  getSidebarLineageRowsByIdentity,
+  getTopVisibleLineageAncestorByIdentity
+} from '../../pinned-section-worktrees'
 import { emitPinnedGroup } from './pinned-group-rows'
 import {
   appendWorktreeRows,
@@ -81,6 +85,7 @@ export function buildRows(
   const cyclicLineageIds = nestLineage
     ? getCyclicProjectedWorktreeLineageIds(lineageById, worktreeMap)
     : new Set<string>()
+  const lineageRowsByIdentity = getSidebarLineageRowsByIdentity(worktrees, worktreeMap)
 
   const pendingByRepo = new Map<string, PendingCreationRef[]>()
   for (const creation of pendingCreations) {
@@ -106,6 +111,10 @@ export function buildRows(
     pinnedDisplayPolicy === 'duplicate-in-groups'
       ? worktrees
       : worktrees.filter((worktree) => !pinnedSectionIds.has(getWorktreeHostIdentity(worktree)))
+  const displayRootByIdentity =
+    groupBy === 'repo' && nestLineage
+      ? getTopVisibleLineageAncestorByIdentity(naturalWorktrees, lineageById, worktreeMap)
+      : undefined
   // Why the full set: under the default pinned policy a pinned worktree exists
   // only in the Pinned section, and its host is part of whether the sidebar is
   // mixed at all. Scoping to naturalWorktrees left pinned remotes unlabelled.
@@ -149,6 +158,8 @@ export function buildRows(
     worktreeMap,
     nestLineage,
     cyclicLineageIds,
+    projectIndex,
+    lineageRowsByIdentity,
     noticeHostContextLabelByRepoId,
     mixedWorktreeHostContextLabels
   )
@@ -184,6 +195,8 @@ export function buildRows(
           groupDepth: 0,
           sectionKey: ALL_GROUP_KEY,
           hostContextLabelByWorktreeIdentity: mixedWorktreeHostContextLabels,
+          projectIndex,
+          lineageRowsByIdentity,
           cyclicLineageIds
         })
         for (const pair of [...renderableFolderWorkspaces].sort((left, right) =>
@@ -204,6 +217,7 @@ export function buildRows(
     settings,
     workspaceStatuses,
     projectIndex,
+    displayRootByIdentity,
     placeholderRepoIds,
     importedWorktreesByRepo,
     newExternalWorktreesInboxByRepo,
@@ -230,7 +244,8 @@ export function buildRows(
     lineageById,
     worktreeMap,
     nestLineage,
-    cyclicLineageIds
+    cyclicLineageIds,
+    lineageRowsByIdentity
   }
 
   if (groupBy !== 'repo' || projectGroups.length === 0) {

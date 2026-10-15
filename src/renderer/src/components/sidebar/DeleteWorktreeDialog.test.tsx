@@ -242,9 +242,18 @@ describe('DeleteWorktreeDialog lineage copy', () => {
     })
   })
 
-  it('shows child-delete copy and only a delete-all action when the workspace has children', async () => {
+  it('names the other project and deletes both real repository targets', async () => {
     const parent = makeWorktree('Parent workspace', '/workspaces/parent')
-    const child = makeWorktree('Child workspace', '/workspaces/child')
+    const child = { ...makeWorktree('Child workspace', '/workspaces/child'), repoId: 'repo-2' }
+    mocks.state.repos = [
+      {
+        id: 'repo-2',
+        path: '/workspaces/backend',
+        displayName: 'Backend',
+        badgeColor: 'gray',
+        addedAt: 1
+      }
+    ]
     mocks.state.modalData = {
       worktreeId: parent.id,
       worktreeDeleteIdentities: [{ id: parent.id, instanceId: parent.instanceId }],
@@ -261,6 +270,7 @@ describe('DeleteWorktreeDialog lineage copy', () => {
     expect(markup).toContain('Child workspaces will be deleted')
     expect(markup).toContain('Deleting this workspace also deletes 1 child workspace.')
     expect(markup).toContain('Child workspace')
+    expect(markup).toContain('Backend')
     expect(markup).toContain('from git and delete their workspace folders.')
     expect(markup).not.toContain('from git and delete its workspace folder.')
     expect(markup).toContain('Delete 2 Workspaces')

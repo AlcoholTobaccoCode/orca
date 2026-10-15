@@ -1,3 +1,7 @@
+import {
+  getTopVisibleLineageRoots,
+  getVisibleLineagePlacement
+} from '../../../src/shared/worktree-lineage-placement'
 import type { WorkspaceStatusDefinition } from '../../../src/shared/worktree/types'
 import {
   DEFAULT_MOBILE_WORKSPACE_STATUSES,
@@ -169,25 +173,6 @@ export function isWorktreePinned(w: Worktree, localPins: Set<string>): boolean {
   return w.isPinned || localPins.has(w.worktreeId)
 }
 
-// Visible pinned rows plus their lineage descendants, walking through filtered-out rows as desktop does.
-function getPinnedSectionIdentities(
-  worktrees: readonly Worktree[],
-  visible: readonly Worktree[],
-  pinnedIds: Set<string>
-): Set<string> {
-  const childrenByParentId = getMobileWorkspaceLineageChildren(worktrees)
-  const identities = new Set(
-    visible.filter((w) => isWorktreePinned(w, pinnedIds)).map((w) => getWorktreeRowIdentity(w))
-  )
-  // A Set iterates entries added mid-loop and ignores repeats, so this walks descendants and stops on cycles.
-  for (const identity of identities) {
-    for (const child of childrenByParentId.get(identity) ?? []) {
-      identities.add(getWorktreeRowIdentity(child))
-    }
-  }
-  return identities
-}
-
 export function buildSections(
   worktrees: Worktree[],
   sortMode: MobileSortMode,
@@ -203,7 +188,16 @@ export function buildSections(
   const filtered = filterWorktrees(worktrees, filters, search)
   const sorted = sortWorktrees(filtered, sortMode)
 
-  const pinnedIdentities = getPinnedSectionIdentities(worktrees, sorted, pinnedIds)
+  const childrenByParentIdentity = getMobileWorkspaceLineageChildren(worktrees)
+  const pinnedIdentities = new Set(
+    getVisibleLineagePlacement(
+      sorted,
+      sorted.filter((w) => isWorktreePinned(w, pinnedIds)),
+      childrenByParentIdentity,
+      getWorktreeRowIdentity,
+      true
+    ).keys()
+  )
   const isInPinned = (w: Worktree) => pinnedIdentities.has(getWorktreeRowIdentity(w))
   const pinned = sorted.filter(isInPinned)
   const canonicalGroupWorktrees = showPinnedInGroups ? sorted : sorted.filter((w) => !isInPinned(w))
@@ -218,6 +212,11 @@ export function buildSections(
       sections.push(makeSection('all', 'All', canonicalGroupWorktrees, collapsedGroups))
     }
   } else if (groupMode === 'repo') {
+    const displayRootByIdentity = getTopVisibleLineageRoots(
+      canonicalGroupWorktrees,
+      childrenByParentIdentity,
+      getWorktreeRowIdentity
+    )
     const representedRepoIds = new Set(worktrees.map((w) => w.repoId))
     const query = search.trim().toLowerCase()
     const placeholderRepoIds = projectCatalog.repos
@@ -232,7 +231,7 @@ export function buildSections(
     const projectSections = withRepoSectionDisplayLabels(
       buildProjectSections({
         items: canonicalGroupWorktrees,
-        repoIdOf: (w) => w.repoId,
+        repoIdOf: (w) => (displayRootByIdentity.get(getWorktreeRowIdentity(w)) ?? w).repoId,
         repoMap: buildSectionRepoMap(projectCatalog.repos, worktrees),
         projectIndex: buildProjectGroupingIndex(projectCatalog.grouping ?? undefined),
         placeholderRepoIds,

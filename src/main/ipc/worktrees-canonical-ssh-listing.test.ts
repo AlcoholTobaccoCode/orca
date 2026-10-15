@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { hydrateRepo } from '../persistence/tracking-repos/repo-hydration'
 import type { Repo } from '../../shared/repo-types'
+import type { WorktreeMeta } from '../../shared/worktree/meta-types'
 import { getSshProviderAuthority, resetSshProviderAuthorities } from '../ssh/ssh-provider-authority'
+import { mergeWorktreeMetaForWrite } from '../persistence/loading-store/worktree-meta-write-normalization'
 
 const mocks = vi.hoisted(() => ({
   handlers: new Map<string, (event: unknown, args?: unknown) => unknown>(),
@@ -142,6 +144,58 @@ describe.each([
     rememberLocalWorktreeRoots(store as never, repo, rows)
     expect(mocks.git).not.toHaveBeenCalled()
     expect(mocks.roots).not.toHaveBeenCalled()
+  })
+})
+
+it('projects known SSH worktrees across repositories on the same host', async () => {
+  const { repo, store } = fixture({ connectionId: 'host-a' })
+  const parentRepo = hydrateRepo(
+    { ...repo, id: 'parent-repo', path: '/remote/parent', displayName: 'parent' },
+    new Map()
+  )
+  const childId = 'repo::/remote/repository'
+  const parentId = 'parent-repo::/remote/parent'
+  const metaById: Record<string, WorktreeMeta> = {
+    [childId]: mergeWorktreeMetaForWrite(undefined, {
+      hostId: 'ssh:host-a',
+      instanceId: 'child-instance',
+      projectId: 'child-project'
+    }),
+    [parentId]: mergeWorktreeMetaForWrite(undefined, {
+      hostId: 'ssh:host-a',
+      instanceId: 'parent-instance',
+      projectId: 'parent-project'
+    })
+  }
+  Object.assign(store, {
+    getRepos: () => [repo, parentRepo],
+    getAllWorktreeMeta: () => metaById,
+    getWorktreeMeta: (id: string) => metaById[id],
+    getAllWorktreeLineage: () => ({
+      [childId]: {
+        worktreeId: childId,
+        worktreeInstanceId: 'child-instance',
+        parentWorktreeId: parentId,
+        parentWorktreeInstanceId: 'parent-instance',
+        origin: 'cli',
+        capture: { source: 'explicit-cli-flag', confidence: 'explicit' },
+        createdAt: 1
+      }
+    })
+  })
+
+  const child = await invoke('known')
+  expect(child).toMatchObject({
+    status: 'complete',
+    result: { worktrees: [expect.objectContaining({ id: childId, parentWorktreeId: parentId })] }
+  })
+  const parent = mocks.handlers.get('worktrees:listKnownForExecutionHost')!(null, {
+    repoId: parentRepo.id,
+    executionHostId: 'ssh:host-a'
+  })
+  expect(parent).toMatchObject({
+    status: 'complete',
+    result: { worktrees: [expect.objectContaining({ id: parentId, childWorktreeIds: [childId] })] }
   })
 })
 

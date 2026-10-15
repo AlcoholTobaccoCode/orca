@@ -7,6 +7,7 @@ import { PINNED_GROUP_KEY, PINNED_GROUP_META } from './group-keys'
 import { appendWorktreeRows, buildImportedWorktreesCardRow } from './row-builders'
 import type { NoticeHostContext } from './host-labels'
 import type { ImportedWorktreesCardCandidate, Row } from './row-types'
+import type { ProjectGroupingIndex } from '../../../../../../shared/project-section-grouping'
 
 /**
  * The Pinned section's rows.
@@ -27,6 +28,8 @@ export function emitPinnedGroup(
   worktreeMap: Map<string, Worktree>,
   nestLineage: boolean,
   cyclicLineageIds: ReadonlySet<string>,
+  projectIndex: ProjectGroupingIndex | null,
+  lineageRowsByIdentity: ReadonlyMap<string, Worktree>,
   noticeHostContextLabelByRepoId?: ReadonlyMap<string, NoticeHostContext>,
   hostContextLabelByWorktreeIdentity?: ReadonlyMap<string, string>
 ): void {
@@ -83,6 +86,8 @@ export function emitPinnedGroup(
     groupDepth: 0,
     sectionKey: PINNED_GROUP_KEY,
     hostContextLabelByWorktreeIdentity,
+    projectIndex,
+    lineageRowsByIdentity,
     cyclicLineageIds
   })
   if (!allowImportedFallback) {

@@ -109,7 +109,7 @@ function makeWorktree(overrides: Partial<Worktree> = {}): Worktree {
 }
 
 // Imported per test so the mocked store is seeded before the module reads it.
-async function renderCardMarkup(): Promise<string> {
+async function renderCardMarkup(projectContextLabel?: string): Promise<string> {
   const { default: WorktreeCard } = await import('./WorktreeCard')
   return renderToStaticMarkup(
     <WorktreeCard
@@ -117,6 +117,7 @@ async function renderCardMarkup(): Promise<string> {
       repo={makeRepo()}
       isActive={false}
       hostContextLabel={HOST_LABEL}
+      projectContextLabel={projectContextLabel}
     />
   )
 }
@@ -144,6 +145,17 @@ describe('WorktreeCard host badge toggle', () => {
       worktreeCardProperties = ['status']
 
       expect(await renderCardMarkup()).not.toContain(HOST_LABEL)
+    },
+    WORKTREE_CARD_IMPORT_TIMEOUT_MS
+  )
+
+  it(
+    'keeps the parent-project context visible with host badges off',
+    async () => {
+      worktreeCardProperties = ['status']
+      const markup = await renderCardMarkup('Other project')
+      expect(markup).toContain('Other project')
+      expect(markup).not.toContain(HOST_LABEL)
     },
     WORKTREE_CARD_IMPORT_TIMEOUT_MS
   )

@@ -58,10 +58,10 @@ export async function runWorktreeDeletesInParallel(
   useAppStore
     .getState()
     .markWorktreesDeleting(uniqueTargets.map((target) => (target.hostId ? target : target.id)))
-  // Git worktree removal shares repo locks only within one execution host.
+  // Directory dependencies cross repositories, but never execution hosts.
   const groups = new Map<string, (typeof uniqueTargets)[number][]>()
   for (const target of uniqueTargets) {
-    const groupIdentity = composeWorktreeHostIdentity(target.hostId, target.repoId)
+    const groupIdentity = target.hostId ?? LOCAL_EXECUTION_HOST_ID
     const group = groups.get(groupIdentity)
     if (group) {
       group.push(target)

@@ -183,7 +183,7 @@ describe('runWorktreeDeletesInParallel', () => {
 
     const deleted = runDeletesForCurrentWorktrees([
       { id: 'parent', displayName: 'parent', repoId: 'repo-a', path: '/workspaces/parent' },
-      { id: 'child', displayName: 'child', repoId: 'repo-a', path: '/workspaces/parent/child' }
+      { id: 'child', displayName: 'child', repoId: 'repo-b', path: '/workspaces/parent/child' }
     ])
 
     expect(mocks.state.markWorktreesDeleting).toHaveBeenCalledWith(['parent', 'child'])
@@ -256,13 +256,13 @@ describe('runWorktreeDeletesInParallel', () => {
     expect(mocks.state.removeWorktree).toHaveBeenCalledTimes(2)
   })
 
-  it('keeps a parent delete waiting for its child to finish on this machine', async () => {
+  it('waits for a nested child from another repository before deleting its parent', async () => {
     const child = deferredDeleteResult()
     mocks.state.removeWorktree.mockImplementationOnce(() => child.promise)
 
     const deleted = runDeletesForCurrentWorktrees([
       { id: 'parent', displayName: 'parent', repoId: 'repo-a', path: '/workspaces/parent' },
-      { id: 'child', displayName: 'child', repoId: 'repo-a', path: '/workspaces/parent/child' }
+      { id: 'child', displayName: 'child', repoId: 'repo-b', path: '/workspaces/parent/child' }
     ])
 
     await vi.waitFor(() => expect(mocks.state.removeWorktree).toHaveBeenCalledTimes(1))
@@ -380,7 +380,7 @@ describe('runWorktreeDeletesInParallel', () => {
     await expect(
       runDeletesForCurrentWorktrees([
         { id: 'parent', displayName: 'parent', repoId: 'repo-a', path: '/workspaces/parent' },
-        { id: 'child', displayName: 'child', repoId: 'repo-a', path: '/workspaces/parent/child' }
+        { id: 'child', displayName: 'child', repoId: 'repo-b', path: '/workspaces/parent/child' }
       ])
     ).resolves.toEqual([])
 
