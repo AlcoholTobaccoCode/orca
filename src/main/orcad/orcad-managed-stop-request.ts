@@ -1,7 +1,7 @@
 /** Validating an instance-bound stop request before the running orcad acts on it. */
 import { createHash } from 'node:crypto'
 import { lstatSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { readNodeFileSyncWithinLimit } from '../../shared/node-bounded-file-reader'
 import {
   ORCAD_MANAGED_STOP_REQUEST_MAX_BYTES,
@@ -11,7 +11,7 @@ import {
   type OrcadManagedStopInstance,
   type OrcadManagedStopRequest
 } from '../../shared/orcad-stop-request'
-import { readOrcadInstanceLockRecord } from './orcad-instance-lock'
+import { readOrcadInstanceLockRecord, type OrcadLockRecord } from './orcad-instance-lock'
 
 /** Keyed by the lock nonce, so a request for a previous instance is never this one's. */
 export function orcadManagedStopRequestPath(instance: OrcadManagedStopInstance): string {
@@ -38,11 +38,18 @@ export function sameOrcadManagedStopInstance(
 
 /** Whether the instance lock still names exactly this instance. */
 export function orcadInstanceLockNames(instance: OrcadManagedStopInstance): boolean {
+  return readOrcadInstanceLockNaming(instance) !== null
+}
+
+/** The lock record, only while it still names exactly this instance. */
+export function readOrcadInstanceLockNaming(
+  instance: OrcadManagedStopInstance
+): OrcadLockRecord | null {
   if (!lstatSync(instance.lockPath).isFile()) {
-    return false
+    return null
   }
   const record = readOrcadInstanceLockRecord(instance.lockPath)
-  return record !== null && sameOrcadManagedStopInstance(instance, record)
+  return record !== null && sameOrcadManagedStopInstance(instance, record) ? record : null
 }
 
 /** Throws unless the request names this running instance and its lock is still ours. */
@@ -54,7 +61,8 @@ export function validateOrcadManagedStopRequest(
   if (
     request.version !== context.version ||
     request.runtimeId !== context.runtimeId ||
-    request.instance.lockPath !== context.instance.lockPath ||
+    // Resolved: a Windows client names the lock with `/`, orcad's own path.join with `\`.
+    resolve(request.instance.lockPath) !== resolve(context.instance.lockPath) ||
     !sameOrcadManagedStopInstance(request.instance, context.instance)
   ) {
     throw new Error('orcad_managed_stop_request_identity_mismatch')

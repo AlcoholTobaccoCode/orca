@@ -4,6 +4,7 @@ import { createServer as createHttpServer, type Server as HttpServer } from 'nod
 import { WebSocketServer, type WebSocket } from 'ws'
 import type { RpcTransport } from './transport'
 import { createStaticWebClientHandler } from './static-web-client-handler'
+import { hasWebClientUpgradeMarker } from '../../../shared/web-origin-security'
 import {
   attachNodeWebSocketLifecycle,
   clearNodeWebSocketPreAuthTimer,
@@ -13,11 +14,12 @@ import {
   type WebSocketMessageHandler
 } from './node-websocket-lifecycle'
 import { RemoteRuntimeServerHeartbeat } from './remote-runtime-server-heartbeat'
-import {
-  WEBSOCKET_TRANSPORT_MAX_CONNECTIONS,
-  WEBSOCKET_TRANSPORT_MAX_MESSAGE_BYTES,
-  WEBSOCKET_TRANSPORT_MAX_TCP_CONNECTIONS
-} from './websocket-transport-limits'
+
+const WEBSOCKET_TRANSPORT_MAX_MESSAGE_BYTES = 1024 * 1024
+// Why: one desktop remote-host client can hold many concurrent streams, so keep the cap high enough that stale streams don't starve control RPCs.
+const WEBSOCKET_TRANSPORT_MAX_CONNECTIONS = 128
+// Why: bound pre-upgrade descriptor use above the WS cap so raw sockets can't grow without bound.
+const WEBSOCKET_TRANSPORT_MAX_TCP_CONNECTIONS = WEBSOCKET_TRANSPORT_MAX_CONNECTIONS * 2
 
 const PRE_AUTH_TIMEOUT_MS = 10_000
 
@@ -41,8 +43,8 @@ export type WebSocketTransportOptions = {
   fallbackPort?: number
   // Why: serve --port clients dial the pinned port; prefer it first so a stale fallback can't steal the pin (issue #8535). Default keeps fallback-first (STA-1511).
   preferPinnedPort?: boolean
-  // Why: managed SSH tunnels dial one configured remote port and cannot follow a fallback.
-  strictPort?: boolean
+  // Why: deterministic ports tried before an OS-assigned one, so a fallback stays stable across reboots.
+  fallbackLadder?: readonly number[]
 }
 
 export class WebSocketTransport implements RpcTransport {
@@ -55,8 +57,10 @@ export class WebSocketTransport implements RpcTransport {
   private readonly staticRoot: string | undefined
   private readonly fallbackPort: number | undefined
   private readonly preferPinnedPort: boolean
-  private readonly strictPort: boolean
+  private readonly fallbackLadder: readonly number[]
+  private persistedFallbackBindFailed = false
   private httpServer: HttpsServer | HttpServer | null = null
+  private readonly webPages = new WeakMap<WebSocket, { webOrigin?: string; webClient: true }>()
   private wss: WebSocketServer | null = null
   private messageHandler: WebSocketMessageHandler | null = null
   private connectionCloseHandler: WebSocketConnectionCloseHandler | null = null
@@ -76,7 +80,7 @@ export class WebSocketTransport implements RpcTransport {
     staticRoot,
     fallbackPort,
     preferPinnedPort,
-    strictPort
+    fallbackLadder
   }: WebSocketTransportOptions) {
     this.host = host
     this.port = port
@@ -91,16 +95,26 @@ export class WebSocketTransport implements RpcTransport {
     this.staticRoot = staticRoot
     this.fallbackPort = fallbackPort
     this.preferPinnedPort = preferPinnedPort === true
-    this.strictPort = strictPort === true
+    this.fallbackLadder = fallbackLadder ?? []
+  }
+
+  // True when the persisted fallback was tried and refused, so the caller can drop it.
+  get persistedFallbackFailed(): boolean {
+    return this.persistedFallbackBindFailed
   }
 
   onMessage(handler: WebSocketMessageHandler): void {
     this.messageHandler = handler
   }
 
-  // Why: pass the closing `ws` and whether other sockets share its deviceToken, so client-scoped teardown fires only on the last disconnect.
+  // Why: pass the closing `ws` and whether other sockets share its client id (the device id), so client-scoped teardown fires only on the last disconnect.
   onConnectionClose(handler: WebSocketConnectionCloseHandler): void {
     this.connectionCloseHandler = handler
+  }
+
+  /** The Orca web bundle that opened `ws` (it marks its upgrade), with its page origin. */
+  webPageOf(ws: WebSocket): { webOrigin?: string; webClient: true } | undefined {
+    return this.webPages.get(ws)
   }
 
   setClientId(ws: WebSocket, clientId: string): void {
@@ -138,27 +152,29 @@ export class WebSocketTransport implements RpcTransport {
     if (this.wss) {
       return
     }
-    if (this.strictPort) {
-      await this.tryListen(this.port)
-      return
-    }
-
-    // Why: bind a persisted fallback first so devices paired to it aren't stranded (STA-1511); serve --port flips to pinned-first (issue #8535); on failure each candidate falls through to OS-assigned port 0.
+    // Why: bind a persisted fallback first so devices paired to it aren't stranded (STA-1511); serve --port flips to pinned-first (issue #8535); then the deterministic ladder, and only then an OS-assigned port 0.
     const persistedFallbackPort =
       this.fallbackPort !== undefined && this.fallbackPort !== 0 && this.fallbackPort !== this.port
         ? this.fallbackPort
         : undefined
-    const candidatePorts =
+    const configuredPorts =
       persistedFallbackPort === undefined
         ? [this.port]
         : this.preferPinnedPort
           ? [this.port, persistedFallbackPort]
           : [persistedFallbackPort, this.port]
+    const candidatePorts = [
+      ...configuredPorts,
+      ...this.fallbackLadder.filter((port) => !configuredPorts.includes(port))
+    ]
     for (const port of candidatePorts) {
       try {
         await this.tryListen(port)
         return
       } catch (error: unknown) {
+        if (port === persistedFallbackPort) {
+          this.persistedFallbackBindFailed = true
+        }
         // Why: a persisted fallback may fail for any reason, while configured ports fall through only when their listen is occupied or denied.
         if (
           port !== persistedFallbackPort &&
@@ -204,10 +220,17 @@ export class WebSocketTransport implements RpcTransport {
       maxPayload: WEBSOCKET_TRANSPORT_MAX_MESSAGE_BYTES
     })
 
-    wss.on('connection', (ws) => {
+    wss.on('connection', (ws, request) => {
       if (wss.clients.size > WEBSOCKET_TRANSPORT_MAX_CONNECTIONS) {
         rejectNodeWebSocketOverCapacity(ws)
         return
+      }
+      if (hasWebClientUpgradeMarker(request.url)) {
+        const origin = request.headers.origin
+        this.webPages.set(ws, {
+          ...(typeof origin === 'string' ? { webOrigin: origin } : {}),
+          webClient: true
+        })
       }
       this.handleConnection(ws)
     })

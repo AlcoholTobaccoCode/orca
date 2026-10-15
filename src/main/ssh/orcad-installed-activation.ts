@@ -5,24 +5,28 @@
  * the host for `recoverInterruptedOrcadActivation` to finish or undo it. A run that ends with
  * the host provably back on one slot drops the fence; one that cannot prove it keeps it.
  */
+import { orcadRemoteBaseDir } from './orcad-remote-windows-node'
 import { randomUUID } from 'node:crypto'
 import type { OrcadDeployOptions, OrcadDeployResult } from './orcad-remote-deploy'
-import { isUnconfirmedSshCommandTermination } from './ssh-relay-deploy-helpers'
-import { withActivatedVersion, type OrcadStateSnapshot } from './orcad-activation-record'
+import { isUnconfirmedSshCommandTermination } from './ssh-relay-exec-command'
+import {
+  withActivatedVersion,
+  type OrcadActivationRecord,
+  type OrcadStateSnapshot
+} from './orcad-activation-record'
 import {
   readOrcadActivationRecord,
   writeOrcadActivationRecord
 } from './orcad-activation-record-store'
-import { evaluateOrcadActivation } from './orcad-activation-gate'
-import { planOrcadUpdate } from './orcad-update-plan'
+import { launchAndJudgeOrcadSlot } from './orcad-candidate-launch-verdict'
+import { planOrcadUpdate, type OrcadTerminalCensus } from './orcad-update-plan'
 import { CURRENT_ORCAD_DAEMON_PROTOCOL } from './orcad-daemon-protocol-crossing'
-import { ORCAD_LOG_FILENAME, type OrcadReadinessParse } from './orcad-remote-launch'
+import { ORCAD_LOG_FILENAME } from './orcad-remote-launch'
 import {
   captureOrcadStateSnapshotCommand,
   orcadSnapshotDirName,
   parseOrcadSnapshotCapture
 } from './orcad-state-snapshot'
-import { orcadStopFreedTheHost } from './orcad-remote-process-control'
 import { joinRemotePath } from './ssh-remote-platform'
 import { computeLocalOrcadBuildHash } from './orcad-local-build-hash'
 import { preflightInstalledOrcad } from './orcad-remote-preflight'
@@ -34,30 +38,53 @@ import {
   withOrcadActivationIncumbentStopped,
   withOrcadActivationSnapshot
 } from './orcad-activation-transaction-transitions'
-import {
-  readOrcadActivationTransaction,
-  writeOrcadActivationTransaction
-} from './orcad-activation-transaction-store'
-import {
-  execOrcadRemote,
-  launchOrcadAndAwaitReadiness,
-  withoutAbortSignal
-} from './orcad-remote-runtime-control'
+import { writeOrcadActivationTransaction } from './orcad-activation-transaction-store'
+import { execOrcadRemoteOr, withoutAbortSignal } from './orcad-remote-runtime-control'
+import { execOrcadStateMutationOr } from './orcad-state-mutation-exec'
 import {
   initialOrcadActivationAdmissionCommand,
   parseInitialOrcadActivationAdmission
 } from './orcad-initial-activation-admission'
 import {
-  launchOrcadSlot,
   orcadSlotDir,
   resolveOrcadSlotIdentity,
-  stopOrcadSlot,
-  ORCAD_SLOT_STOP_WAIT_SECONDS,
   type OrcadSlotIdentity
 } from './orcad-recovery-slot'
-import { orcadSnapshotPath, recoverOrcadIncumbent } from './orcad-incumbent-recovery'
+import { orcadSnapshotPath } from './orcad-incumbent-recovery'
+import {
+  restartAfterSnapshotFailure,
+  restoreAfterRejectedCandidate,
+  stopTransactionIncumbent
+} from './orcad-transaction-incumbent'
+import { withOrcadLogTail } from './orcad-remote-log-tail'
+import { orcadCandidateLaunchFailureCode } from '../orcad/orcad-host-unavailable'
+import { errorMessage } from '../../shared/error-message'
 
 type Outcome = Extract<OrcadDeployResult, { outcome: 'installed-not-activated' }>
+
+/** The caller's `admitRecord` refused the record found under the fence; nothing was touched. */
+export const ORCAD_ACTIVATION_POLICY_REFUSED_CODE = 'orcad_activation_policy_refused'
+
+const UNVERIFIABLE_CENSUS: OrcadTerminalCensus = {
+  liveSessions: null,
+  startedSinceActivation: null,
+  daemonProtocolVersion: null
+}
+
+function countedLockedRecord(options: OrcadDeployOptions, record: OrcadActivationRecord): boolean {
+  const counted = options.censusRecord
+  return (
+    !counted || (counted.active === record.active && counted.activatedAt === record.activatedAt)
+  )
+}
+
+/** A census counted against another incumbent says nothing about this one's terminals. */
+function censusForLockedRecord(
+  options: OrcadDeployOptions,
+  record: OrcadActivationRecord
+): OrcadTerminalCensus {
+  return countedLockedRecord(options, record) ? options.census : UNVERIFIABLE_CENSUS
+}
 
 export async function activateInstalledOrcad(
   options: OrcadDeployOptions & { localOrcadDir: string },
@@ -72,31 +99,31 @@ export async function activateInstalledOrcad(
     code,
     reason
   })
-  if (await readOrcadActivationTransaction(options)) {
-    // Holding the lock proves its writer is gone, but undoing its work needs a fresh census.
-    lock.retain()
-    return notActivated(
-      'orcad_activation_recovery_required',
-      'An earlier activation on this host was interrupted. Recover it before deploying again.'
-    )
-  }
   const record = await readOrcadActivationRecord(options)
   const plan = planOrcadUpdate({
     record,
     candidateVersion: fullVersion,
-    census: options.census,
+    census: censusForLockedRecord(options, record),
     candidateDaemonProtocol: CURRENT_ORCAD_DAEMON_PROTOCOL,
     ...(options.force !== undefined ? { force: options.force } : {})
   })
   if (plan.action === 'noop') {
     return { outcome: 'already-active', fullVersion }
   }
+  const refusal = options.admitRecord?.(record, fullVersion)
+  if (refusal) {
+    return notActivated(ORCAD_ACTIVATION_POLICY_REFUSED_CODE, refusal)
+  }
   if (plan.action === 'defer') {
     return notActivated(plan.code, plan.reason)
   }
 
   try {
-    await preflightInstalledOrcad({ ...options, remoteInstallDir: remoteDir, fullVersion })
+    await preflightInstalledOrcad({
+      ...options,
+      remoteInstallDir: remoteDir,
+      fullVersion
+    })
   } catch (error) {
     options.signal?.throwIfAborted()
     return notActivated(
@@ -121,7 +148,7 @@ export async function activateInstalledOrcad(
     }
   } else {
     const admission = parseInitialOrcadActivationAdmission(
-      await execOrcadRemote(
+      await execOrcadRemoteOr(
         options,
         initialOrcadActivationAdmissionCommand(
           options.host,
@@ -129,15 +156,24 @@ export async function activateInstalledOrcad(
           remoteDir,
           options.nodePath
         )
-      ).catch((error: unknown) => {
-        if (isUnconfirmedSshCommandTermination(error)) {
-          throw error
-        }
-        return ''
-      })
+      )
     )
     if (admission.decision === 'defer') {
       return notActivated(admission.code, admission.reason)
+    }
+  }
+
+  // Last check before anything stops: the census above may predate a long upload.
+  if (incumbent && options.recountCensus && countedLockedRecord(options, record)) {
+    const recount = planOrcadUpdate({
+      record,
+      candidateVersion: fullVersion,
+      census: await options.recountCensus(),
+      candidateDaemonProtocol: CURRENT_ORCAD_DAEMON_PROTOCOL,
+      ...(options.force !== undefined ? { force: options.force } : {})
+    })
+    if (recount.action === 'defer') {
+      return notActivated(recount.code, recount.reason)
     }
   }
 
@@ -145,28 +181,24 @@ export async function activateInstalledOrcad(
   let transaction: OrcadActivateTransaction = createOrcadActivationTransaction({
     transactionId: randomUUID(),
     candidateVersion: fullVersion,
+    appVersion: options.appVersion,
     recordBefore: record,
     snapshotDirName: orcadSnapshotDirName(fullVersion, startedAt.getTime()),
     now: startedAt
   })
   await writeOrcadActivationTransaction(options, transaction)
   lock.retainOnError()
+  // Past the first mutation a cancel would strand a stopped host, so the run finishes or rolls back.
+  options = withoutAbortSignal(options)
 
-  if (incumbent) {
-    const stopped = await stopOrcadSlot(options, incumbent.remoteDir, false)
-    if (!orcadStopFreedTheHost(stopped)) {
-      // Only a delivered SIGTERM can still change the host; otherwise nothing happened.
-      if (stopped === 'still-running') {
-        lock.retain()
-      }
-      return notActivated(
-        'orcad_outgoing_stop_incomplete',
-        `Could not verify that orcad ${incumbent.version} exited within ` +
-          `${ORCAD_SLOT_STOP_WAIT_SECONDS}s (${stopped}). No snapshot was taken and the ` +
-          'candidate was not started. Orca requires matching runtime readiness before ' +
-          'signaling an incumbent and confirmed exit before snapshotting.'
-      )
-    }
+  const unstopped = incumbent ? await stopTransactionIncumbent(options, incumbent, lock) : null
+  if (unstopped) {
+    return notActivated(
+      'orcad_outgoing_stop_incomplete',
+      `${unstopped} No snapshot was taken and the candidate was not started. Orca requires ` +
+        'matching runtime readiness before signaling an incumbent and confirmed exit before ' +
+        'snapshotting.'
+    )
   }
   transaction = withOrcadActivationIncumbentStopped(transaction, now())
   await writeOrcadActivationTransaction(options, transaction)
@@ -174,15 +206,16 @@ export async function activateInstalledOrcad(
   // A live SQLite WAL is not a backup boundary, so the snapshot waits for confirmed exit.
   const snapshotDir = orcadSnapshotPath(options, transaction.snapshot.dirName)
   const capture = parseOrcadSnapshotCapture(
-    await execOrcadRemote(
+    await execOrcadStateMutationOr(
       options,
-      captureOrcadStateSnapshotCommand(options.host, options.userDataDir, snapshotDir)
-    ).catch((error: unknown) => {
-      if (isUnconfirmedSshCommandTermination(error)) {
-        throw error
-      }
-      return 'FAILED'
-    })
+      captureOrcadStateSnapshotCommand(
+        options.host,
+        options.userDataDir,
+        snapshotDir,
+        orcadRemoteBaseDir(options.host, options.remoteHome)
+      ),
+      'FAILED'
+    )
   )
   if (capture === 'failed') {
     const restarted = incumbent
@@ -206,100 +239,35 @@ export async function activateInstalledOrcad(
   transaction = withOrcadActivationSnapshot(transaction, capture, now())
   await writeOrcadActivationTransaction(options, transaction)
 
-  let parsed: OrcadReadinessParse | null = null
-  let launchError: unknown
-  try {
-    parsed = await launchOrcadAndAwaitReadiness(options, {
-      remoteInstallDir: remoteDir,
-      nodePath: options.nodePath,
-      fullVersion,
-      userDataDir: options.userDataDir,
-      bindHost: options.bindHost,
-      port: options.port
-    })
-  } catch (error) {
-    if (isUnconfirmedSshCommandTermination(error)) {
-      throw error
-    }
-    launchError = error
-  }
-  const verdict = evaluateOrcadActivation(parsed?.state === 'ready' ? parsed.readiness : null, {
-    buildHash: computeLocalOrcadBuildHash(options.localOrcadDir),
-    fullVersion
+  const { verdict, launchError } = await launchAndJudgeOrcadSlot(options, {
+    remoteInstallDir: remoteDir,
+    fullVersion,
+    buildHash: computeLocalOrcadBuildHash(options.localOrcadDir)
   })
   if (verdict.decision === 'reject') {
     const [code, reason] =
       launchError === undefined
         ? [verdict.code, verdict.reason]
         : [
-            'orcad_candidate_launch_failed',
+            orcadCandidateLaunchFailureCode(launchError),
             `The candidate failed while starting: ${errorMessage(launchError)}`
           ]
-    const restored = await restoreAfterRejectedCandidate(options, transaction, incumbent, lock)
-    return notActivated(
-      code,
+    const restored = await restoreAfterRejectedCandidate(options, lock, {
+      launchedDir: orcadSlotDir(options, transaction.candidateVersion),
+      launchedVersion: transaction.candidateVersion,
+      transactionStartedAt: transaction.startedAt,
+      incumbent,
+      restoreState: transaction.snapshot
+    })
+    const located =
       `${reason} Candidate stderr is at ` +
-        `${joinRemotePath(options.host, remoteDir, ORCAD_LOG_FILENAME)}. ${restored}`
-    )
+      `${joinRemotePath(options.host, remoteDir, ORCAD_LOG_FILENAME)}. ${restored}`
+    return notActivated(code, await withOrcadLogTail(options, remoteDir, located))
   }
 
-  const recordAfter = withActivatedVersion(record, fullVersion, snapshot, now())
+  const recordAfter = withActivatedVersion(record, fullVersion, snapshot, now(), options.appVersion)
   transaction = withOrcadActivationCandidateReady(transaction, recordAfter, now())
   await writeOrcadActivationTransaction(options, transaction)
   await writeOrcadActivationRecord(options, recordAfter)
   return { outcome: 'installed-and-activated', fullVersion, verdict }
-}
-
-async function restartAfterSnapshotFailure(
-  options: OrcadDeployOptions,
-  incumbent: OrcadSlotIdentity,
-  lock: OrcadActivationLockControl
-): Promise<string> {
-  try {
-    await launchOrcadSlot(withoutAbortSignal(options), incumbent)
-    lock.recovered()
-    return `orcad ${incumbent.version} was restarted and is serving again.`
-  } catch (error) {
-    lock.retain()
-    return `restarting orcad ${incumbent.version} failed: ${errorMessage(error)} This host requires recovery.`
-  }
-}
-
-/** Stop the candidate this run launched, then put the incumbent back only on safe state. */
-async function restoreAfterRejectedCandidate(
-  options: OrcadDeployOptions,
-  transaction: OrcadActivateTransaction,
-  incumbent: OrcadSlotIdentity | null,
-  lock: OrcadActivationLockControl
-): Promise<string> {
-  const recoveryOptions = withoutAbortSignal(options)
-  try {
-    const candidateDir = orcadSlotDir(options, transaction.candidateVersion)
-    const stopped = await stopOrcadSlot(recoveryOptions, candidateDir, true)
-    if (!orcadStopFreedTheHost(stopped)) {
-      lock.retain()
-      return `The candidate itself did not stop (${stopped}); the host may still be serving the rejected build.`
-    }
-    const recovery = await recoverOrcadIncumbent(recoveryOptions, {
-      transactionStartedAt: transaction.startedAt,
-      launchedVersion: transaction.candidateVersion,
-      incumbent,
-      restoreState: transaction.snapshot,
-      slotsProvenExited: true
-    })
-    if (recovery.outcome === 'refused') {
-      lock.retain()
-      return recovery.reason
-    }
-    return incumbent
-      ? `orcad ${incumbent.version} was restarted and is serving again.`
-      : 'No previous version was active, so this host is now serving nothing.'
-  } catch (error) {
-    lock.retain()
-    return `Restoring the previous version failed: ${errorMessage(error)} This host requires recovery.`
-  }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }

@@ -18,7 +18,7 @@ import Database from '../sqlite/sync-database'
 import type { RuntimeNavigationTarget } from '../../shared/runtime-navigation'
 import type { RuntimeMobileSessionTabsResult } from '../../shared/runtime-types'
 import { OrcaRuntimeService } from './orca-runtime'
-import { requireStructuredCleanupHost } from './rpc/methods/structured-agent-session-gate'
+import { requireStructuredHost } from './rpc/methods/structured-agent-session-gate'
 import { assertLegacyAiVaultResumeCommandAllowed } from '../ai-vault/structured-session-ownership'
 import type { RpcContext } from './rpc/core'
 import {
@@ -33,7 +33,7 @@ const openFailureLogs = () =>
   log.entries.filter((entry) => entry.fields.scope === 'journal-database-open')
 
 // An in-process caller: the same build as the host, so the gate asks it for no capability.
-// oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: the cleanup gate reads only `clientKind` and `clientCapabilities`.
+// oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: the gate reads only `clientKind` and `clientCapabilities`.
 const IN_PROCESS = {} as RpcContext
 
 function install(): ReturnType<typeof ensureStructuredAgentSessionHost> {
@@ -44,14 +44,15 @@ function install(): ReturnType<typeof ensureStructuredAgentSessionHost> {
     claimKeyId: 'key-1',
     resolveWorkspacePath: async () => root,
     resolveEnvironment: async () => ({}),
-    resolveClaudeAuthPolicy: () => ({ stripAuthEnv: true })
+    resolveLaunchArgs: () => [],
+    resolveClaudeAuthPolicy: () => ({ account: 'managed' })
   })
 }
 
 /** The refusal as the gate throws it for every structured request. */
 function gateRefusal(): { reason: unknown; message: string } {
   try {
-    requireStructuredCleanupHost(IN_PROCESS)
+    requireStructuredHost(IN_PROCESS)
   } catch (error) {
     if (isAgentSessionRefusalError(error)) {
       return { reason: error.refusal.details?.reason, message: error.refusal.message }

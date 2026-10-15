@@ -5,6 +5,8 @@ import type { OrcadManagedStopInstance } from '../../shared/orcad-stop-request'
 import { acquireOrcadInstanceLock } from './orcad-instance-lock'
 import { ORCAD_BUNDLED_LAUNCHER_ENV } from './orcad-bundled-runtime'
 import { resolveOrcadExitCode } from './orcad-exit-code'
+import { recordAgentSessionRuntimeEnd } from '../runtime/agent-session-runtime-end-record'
+import { ORCAD_SHUTDOWN_DEADLINE_MS } from './orcad-stop-deadlines'
 import {
   acquireProfileStateRuntimeAdmission,
   type ProfileStateRuntimeAdmission
@@ -21,32 +23,39 @@ function createIdempotentOrcadCleanup(cleanup: () => Promise<void>): () => Promi
   }
 }
 
-export const ORCAD_SHUTDOWN_DEADLINE_MS = 15_000
+export { ORCAD_SHUTDOWN_DEADLINE_MS }
+
+/** True when this call began the stop; false when another source already owns it. */
+export type OrcadShutdownTrigger = (reason: string, onFailed?: () => void) => boolean
 
 /**
  * A launcher and its child can both receive the same process-group or service stop signal.
  * Returns the trigger stop-request listeners share, so every source runs one bounded stop.
+ * `onFailed` runs before a failed or overdue stop exits, so a caller can retract a clean record.
  */
 export function installOrcadShutdownSignals(
   stop: () => Promise<void>,
   deadlineMs = ORCAD_SHUTDOWN_DEADLINE_MS
-): (reason: string) => void {
+): OrcadShutdownTrigger {
   let stopping = false
-  const shutdown = (signal: string): void => {
+  const shutdown: OrcadShutdownTrigger = (signal, onFailed) => {
     if (stopping) {
-      return
+      return false
     }
     stopping = true
     setTimeout(() => {
       console.error(`orcad: shutdown after ${signal} exceeded ${deadlineMs}ms — exiting`)
+      onFailed?.()
       process.exit(1)
     }, deadlineMs)
     stop()
       .then(() => process.exit(0))
       .catch((error) => {
         console.error(`orcad: shutdown after ${signal} failed:`, error)
+        onFailed?.()
         process.exit(resolveOrcadExitCode(error))
       })
+    return true
   }
   process.on('SIGINT', () => shutdown('SIGINT'))
   process.on('SIGTERM', () => shutdown('SIGTERM'))
@@ -70,6 +79,8 @@ export async function startOrcadWithLifecycle<T extends object>(
   // Runtime resources stop in reverse registration order before any host resource.
   const runtime = new OrcadRuntimeLifetime()
   const cleanup = createIdempotentOrcadCleanup(async () => {
+    // First, before any wait: chats whose agent dies with this stop read as a restart, not a crash.
+    recordAgentSessionRuntimeEnd('quit')
     let runtimeCleanupSucceeded = false
     try {
       await runtime.stop()
@@ -131,11 +142,11 @@ export async function startOrcadWithHost<T extends object>(
 }
 
 export async function flushOrcadProfileStoreForShutdown(store: {
-  flushFinalOrThrowAsync(options?: { exportJsonCompatibility?: boolean }): Promise<void>
+  flushFinalOrThrowAsync(): Promise<void>
   freezeWritesAsync(): Promise<void>
 }): Promise<void> {
   try {
-    await store.flushFinalOrThrowAsync({ exportJsonCompatibility: true })
+    await store.flushFinalOrThrowAsync()
   } finally {
     await store.freezeWritesAsync()
   }

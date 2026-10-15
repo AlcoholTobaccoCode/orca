@@ -4,13 +4,14 @@ import {
   type KnownRuntimeEnvironment
 } from '../../shared/runtime-environments'
 import { PAIRING_OFFER_VERSION } from '../../shared/pairing'
-import { createManagedOrcadSshOwner } from '../../shared/managed-orcad-ssh-owner'
 import type { SshTarget } from '../../shared/ssh-types'
 import type { SshConnection } from './ssh-connection'
 import type { SshConnectionManager } from './ssh-connection-manager'
 import type { SshConnectionStore } from './ssh-connection-store'
 import type { SshPortForwardManager } from './ssh-port-forward'
 import { OrcadManagedTunnelManager } from './orcad-managed-tunnel'
+import type { OrcadManagedTunnelTargeting } from './orcad-managed-tunnel-target'
+import { createCancelledConnectAttemptError } from './ssh-connect-attempt-cancellation'
 
 function createEnvironment(linkKind: 'orcadDeployment' | 'sshAccess'): KnownRuntimeEnvironment {
   const paired = createEnvironmentFromPairingOffer({
@@ -43,7 +44,7 @@ function createEnvironment(linkKind: 'orcadDeployment' | 'sshAccess'): KnownRunt
       }
 }
 
-function setup(overrides: Partial<SshTarget> = {}) {
+function setup(overrides: Partial<SshTarget> = {}, targeting?: OrcadManagedTunnelTargeting) {
   const target: SshTarget = {
     id: 'ssh-1',
     label: 'Managed server',
@@ -51,13 +52,13 @@ function setup(overrides: Partial<SshTarget> = {}) {
     port: 22,
     username: 'deploy',
     generation: 7,
-    owner: createManagedOrcadSshOwner('environment-1'),
+    orcadFence: { environmentId: 'environment-1' },
     ...overrides
   }
   let transportGeneration = 3
   // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: a test double for the members the tunnel manager calls.
   const connection = {
-    getTransportGeneration: vi.fn(() => transportGeneration)
+    getConnectGeneration: vi.fn(() => transportGeneration)
   } as unknown as SshConnection
   const connect = vi.fn().mockResolvedValue(connection)
   const reconnect = vi.fn().mockImplementation(async () => {
@@ -84,11 +85,14 @@ function setup(overrides: Partial<SshTarget> = {}) {
       })
     )
   const removeForwardAndWait = vi.fn().mockResolvedValue(null)
+  const closeAll = vi.fn().mockResolvedValue(undefined)
+  const ensureServing = vi.fn().mockResolvedValue({ state: 'serving' })
   // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: a test double for the members the tunnel manager calls.
   const forwardManager = {
     setCallbacks: vi.fn(),
     addForward,
     removeForwardAndWait,
+    closeAll,
     dispose: vi.fn()
   } as unknown as SshPortForwardManager
   // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: a test double for the members the tunnel manager calls.
@@ -103,12 +107,16 @@ function setup(overrides: Partial<SshTarget> = {}) {
     // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: the tunnel manager reads only getTarget.
     getTargetStore: () => ({ getTarget: vi.fn(() => target) }) as unknown as SshConnectionStore,
     forwardManager,
-    probeTunnel
+    probeTunnel,
+    targeting,
+    ensureServing
   })
   return {
     addForward,
+    closeAll,
     connect,
     connection,
+    ensureServing,
     getConnection,
     getState,
     manager,
@@ -123,7 +131,7 @@ function setup(overrides: Partial<SshTarget> = {}) {
 }
 
 describe('OrcadManagedTunnelManager initial binding', () => {
-  it.each(['close', 'dispose', 'reconnect'] as const)(
+  it.each(['close', 'dispose', 'shutdown', 'reconnect'] as const)(
     'removes a late initial forward after %s supersedes setup',
     async (action) => {
       const state = setup()
@@ -133,6 +141,9 @@ describe('OrcadManagedTunnelManager initial binding', () => {
         }
         if (action === 'dispose') {
           state.manager.dispose()
+        }
+        if (action === 'shutdown') {
+          await state.manager.shutdown()
         }
         if (action === 'reconnect') {
           state.setTransportGeneration(4)
@@ -149,6 +160,28 @@ describe('OrcadManagedTunnelManager initial binding', () => {
       expect(state.removeForwardAndWait).toHaveBeenCalledTimes(1)
     }
   )
+
+  it('shutdown waits for every forward process to stop, so none outlives quit', async () => {
+    const state = setup()
+    await state.manager.ensure(createEnvironment('sshAccess'))
+    let finishClose!: () => void
+    state.closeAll.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        finishClose = resolve
+      })
+    )
+
+    let done = false
+    const shutdown = state.manager.shutdown().then(() => {
+      done = true
+    })
+    await Promise.resolve()
+    expect(done).toBe(false)
+    finishClose()
+    await shutdown
+
+    expect(state.closeAll).toHaveBeenCalledOnce()
+  })
 
   it('does not open a forward when canceled while the prior forward is closing', async () => {
     const state = setup()
@@ -229,6 +262,37 @@ describe.each(['orcadDeployment', 'sshAccess'] as const)(
       expect(state.addForward).toHaveBeenCalledTimes(2)
     })
 
+    it.each([
+      ['a fallback port to the preferred one', 6_770, 6_768],
+      ['the preferred port to a fallback one', 6_768, 6_770]
+    ])('rebuilds a reused forward after a redeploy moves %s', async (_name, before, after) => {
+      let bound = before
+      const state = setup(
+        {},
+        {
+          resolveRemotePort: async () => bound,
+          verifyIdentity: async () => ({ verdict: 'verified' })
+        }
+      )
+      await state.manager.ensure(environment())
+      bound = after
+      // A plain ensure keeps the forward: nothing it compares names the bound port.
+      await state.manager.ensure(environment())
+      expect(state.addForward).toHaveBeenCalledOnce()
+
+      await state.manager.rebuild(environment())
+
+      expect(state.removeForwardAndWait).toHaveBeenCalledWith('forward-1')
+      expect(state.addForward).toHaveBeenLastCalledWith(
+        'ssh-1',
+        expect.anything(),
+        46_768,
+        '127.0.0.1',
+        after,
+        'Managed Orca server: Managed server'
+      )
+    })
+
     it.each(['ensure', 'resume'] as const)(
       'discards a forward when SSH reconnects during %s binding',
       async (operation) => {
@@ -243,7 +307,7 @@ describe.each(['orcadDeployment', 'sshAccess'] as const)(
         })
         await (operation === 'resume'
           ? state.manager.recoverAfterHostResume(resumeOptions())
-          : state.manager.ensure(environment()))
+          : expect(state.manager.ensure(environment())).rejects.toThrow('superseded'))
         expect(state.removeForwardAndWait).toHaveBeenCalledWith('stale-forward')
         state.probeTunnel.mockClear()
         await state.manager.recoverAfterHostResume(resumeOptions())
@@ -261,7 +325,7 @@ describe.each(['orcadDeployment', 'sshAccess'] as const)(
     })
 
     it('fails closed when another environment owns the target', async () => {
-      const state = setup({ owner: createManagedOrcadSshOwner('environment-2') })
+      const state = setup({ orcadFence: { environmentId: 'environment-2' } })
 
       await expect(state.manager.ensure(environment())).rejects.toThrow('no longer owned')
       expect(state.connect).not.toHaveBeenCalled()
@@ -293,7 +357,7 @@ describe.each(['orcadDeployment', 'sshAccess'] as const)(
         return state.connection
       })
 
-      await state.manager.ensure(environment())
+      await expect(state.manager.ensure(environment())).rejects.toThrow('superseded')
 
       expect(state.addForward).not.toHaveBeenCalled()
     })
@@ -301,13 +365,106 @@ describe.each(['orcadDeployment', 'sshAccess'] as const)(
     it('rechecks SSH ownership after connection resolves', async () => {
       const state = setup()
       state.connect.mockImplementationOnce(async () => {
-        state.target.owner = createManagedOrcadSshOwner('environment-2')
+        state.target.orcadFence = { environmentId: 'environment-2' }
         return state.connection
       })
 
-      await state.manager.ensure(environment())
+      await expect(state.manager.ensure(environment())).rejects.toThrow('superseded')
 
       expect(state.addForward).not.toHaveBeenCalled()
+    })
+
+    it('builds a fresh tunnel for a caller that joins a run a close() superseded', async () => {
+      const state = setup()
+      let finishConnect!: () => void
+      state.connect.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishConnect = () => resolve(state.connection)
+          })
+      )
+      const first = state.manager.ensure(environment())
+      await state.manager.close('environment-1')
+      const joined = state.manager.ensure(environment())
+      finishConnect()
+      await expect(first).rejects.toThrow('superseded')
+      await expect(joined).resolves.toBeUndefined()
+      expect(state.addForward).toHaveBeenCalledOnce()
+    })
+
+    it('lets a caller that joined a run a transport change overtook build its own', async () => {
+      const state = setup()
+      state.addForward.mockImplementationOnce(async () => {
+        state.setTransportGeneration(9)
+        return { id: 'stale-forward', localPort: 46_768, remotePort: 6_768 }
+      })
+      const first = state.manager.ensure(environment())
+      const joined = state.manager.ensure(environment())
+      await expect(first).rejects.toThrow('superseded')
+      await expect(joined).resolves.toBeUndefined()
+      expect(state.addForward).toHaveBeenCalledTimes(2)
+    })
+
+    it('lets a caller that joined a run a disconnect cancelled build its own, once', async () => {
+      const state = setup()
+      let cancel!: () => void
+      state.connect.mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            cancel = () => reject(createCancelledConnectAttemptError())
+          })
+      )
+      const restore = state.manager.ensure(environment())
+      const connect = state.manager.ensure(environment())
+      cancel()
+      await expect(restore).rejects.toThrow('SSH connection attempt was cancelled')
+      await expect(connect).resolves.toBeUndefined()
+      expect(state.connect).toHaveBeenCalledTimes(2)
+      expect(state.addForward).toHaveBeenCalledOnce()
+    })
+
+    it.each(['serving', 'unverifiable'] as const)(
+      'rebuilds a joined tunnel when its %s server check completes on a retired transport',
+      async (verdict) => {
+        const state = setup()
+        let finishCheck!: () => void
+        state.ensureServing.mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              finishCheck = () =>
+                resolve(
+                  verdict === 'serving'
+                    ? { state: verdict }
+                    : { state: verdict, detail: 'SSH operation was cancelled' }
+                )
+            })
+        )
+        const first = state.manager.ensure(environment())
+        const firstOutcome = first.then(
+          () => 'resolved',
+          (error: unknown) => String(error)
+        )
+        await vi.waitFor(() => expect(state.ensureServing).toHaveBeenCalledOnce())
+        state.setTransportGeneration(4)
+        const joined = state.manager.ensure(environment())
+        finishCheck()
+        await joined
+        expect(state.addForward).toHaveBeenCalledTimes(2)
+        expect(state.ensureServing).toHaveBeenCalledTimes(2)
+        expect(state.removeForwardAndWait).toHaveBeenCalledWith('forward-1')
+        expect(await firstOutcome).toContain('superseded')
+      }
+    )
+
+    it('hands a joiner the joined run’s auth failure instead of prompting again', async () => {
+      const state = setup()
+      const auth = new Error('All configured authentication methods failed')
+      state.connect.mockRejectedValueOnce(auth)
+      const first = state.manager.ensure(environment())
+      const joined = state.manager.ensure(environment())
+      await expect(first).rejects.toBe(auth)
+      await expect(joined).rejects.toBe(auth)
+      expect(state.connect).toHaveBeenCalledOnce()
     })
 
     it('re-reads the saved environment after connection rather than trusting its initial snapshot', async () => {
@@ -322,7 +479,7 @@ describe.each(['orcadDeployment', 'sshAccess'] as const)(
         return state.connection
       })
 
-      await state.manager.ensure(original, () => current)
+      await expect(state.manager.ensure(original, () => current)).rejects.toThrow('superseded')
 
       expect(state.addForward).not.toHaveBeenCalled()
     })
@@ -336,7 +493,7 @@ describe.each(['orcadDeployment', 'sshAccess'] as const)(
         return { id: 'late-forward', localPort: 46_768, remotePort: 6_768 }
       })
 
-      await state.manager.ensure(original, () => current)
+      await expect(state.manager.ensure(original, () => current)).rejects.toThrow('superseded')
 
       expect(state.removeForwardAndWait).toHaveBeenCalledWith('late-forward')
     })
@@ -348,11 +505,43 @@ describe.each(['orcadDeployment', 'sshAccess'] as const)(
         return { id: 'late-forward', localPort: 46_768, remotePort: 6_768 }
       })
 
-      await state.manager.ensure(environment())
+      await expect(state.manager.ensure(environment())).rejects.toThrow('superseded')
 
       expect(state.removeForwardAndWait).toHaveBeenCalledWith('late-forward')
       await state.manager.recoverAfterHostResume(resumeOptions())
       expect(state.probeTunnel).not.toHaveBeenCalled()
+    })
+
+    it('checks that the server is running only when it sets up a fresh forward', async () => {
+      const state = setup()
+
+      await state.manager.ensure(environment())
+      await state.manager.ensure(environment())
+      expect(state.ensureServing).toHaveBeenCalledOnce()
+      expect(state.ensureServing).toHaveBeenCalledWith({
+        environment: expect.objectContaining({ id: 'environment-1' }),
+        target: state.target,
+        connection: state.connection,
+        remotePort: 6_768
+      })
+
+      state.setTransportGeneration(4)
+      await state.manager.ensure(environment())
+      expect(state.ensureServing).toHaveBeenCalledTimes(2)
+    })
+
+    it('starts a server that stopped while the client slept once the tunnel is rebuilt', async () => {
+      const state = setup()
+      await state.manager.ensure(environment())
+      state.probeTunnel.mockResolvedValue(false)
+
+      await state.manager.recoverAfterHostResume(resumeOptions())
+
+      expect(state.reconnect).toHaveBeenCalledOnce()
+      expect(state.ensureServing).toHaveBeenCalledTimes(2)
+      expect(state.ensureServing).toHaveBeenLastCalledWith(
+        expect.objectContaining({ target: state.target, remotePort: 6_768 })
+      )
     })
 
     it('keeps a healthy managed tunnel intact after host resume', async () => {
@@ -502,3 +691,137 @@ describe.each(['orcadDeployment', 'sshAccess'] as const)(
     })
   }
 )
+
+describe('OrcadManagedTunnelManager bound port', () => {
+  function boundPortSetup(ports: number[], verdicts: ('verified' | 'foreign')[] = []) {
+    const resolveRemotePort = vi.fn(async () => ports.shift() ?? 6_768)
+    const verifyIdentity = vi.fn(async () =>
+      verdicts.shift() === 'foreign'
+        ? { verdict: 'foreign' as const, detail: '4001: Unauthorized' }
+        : { verdict: 'verified' as const }
+    )
+    return {
+      ...setup({}, { resolveRemotePort, verifyIdentity }),
+      resolveRemotePort,
+      verifyIdentity
+    }
+  }
+
+  it('forwards to the port orcad bound when another runtime holds the preferred one', async () => {
+    const state = boundPortSetup([58_520])
+    await state.manager.ensure(createEnvironment('orcadDeployment'))
+
+    expect(state.addForward).toHaveBeenCalledWith(
+      'ssh-1',
+      state.connection,
+      46_768,
+      '127.0.0.1',
+      58_520,
+      'Managed Orca server: Managed server'
+    )
+    expect(state.verifyIdentity).toHaveBeenCalledOnce()
+  })
+
+  it('follows a restarted server to the port it bound, within the same ensure', async () => {
+    const state = boundPortSetup([6_768, 58_520])
+    state.ensureServing
+      .mockResolvedValueOnce({ state: 'started', boundPort: 58_520 })
+      .mockResolvedValue({ state: 'serving' })
+    await state.manager.ensure(createEnvironment('orcadDeployment'))
+
+    expect(state.removeForwardAndWait).toHaveBeenCalledWith('forward-1')
+    expect(state.addForward).toHaveBeenLastCalledWith(
+      'ssh-1',
+      state.connection,
+      46_768,
+      '127.0.0.1',
+      58_520,
+      'Managed Orca server: Managed server'
+    )
+    expect(state.ensureServing).toHaveBeenLastCalledWith(
+      expect.objectContaining({ remotePort: 58_520 })
+    )
+  })
+
+  it('rebuilds after an explicit check finds the server restarted on another port', async () => {
+    const state = boundPortSetup([6_768, 58_520])
+    const environment = createEnvironment('orcadDeployment')
+    await state.manager.ensure(environment)
+    state.ensureServing
+      .mockResolvedValueOnce({ state: 'started', boundPort: 58_520 })
+      .mockResolvedValue({ state: 'serving' })
+
+    await expect(state.manager.verifyServing(environment)).resolves.toMatchObject({
+      state: 'started',
+      rebind: true
+    })
+    expect(state.addForward).toHaveBeenCalledTimes(2)
+    expect(state.addForward).toHaveBeenLastCalledWith(
+      'ssh-1',
+      state.connection,
+      46_768,
+      '127.0.0.1',
+      58_520,
+      'Managed Orca server: Managed server'
+    )
+  })
+
+  it('reuses a verified tunnel without reading the port again', async () => {
+    const state = boundPortSetup([58_520])
+    const environment = createEnvironment('orcadDeployment')
+    await state.manager.ensure(environment)
+    await state.manager.ensure(environment)
+
+    expect(state.resolveRemotePort).toHaveBeenCalledOnce()
+    expect(state.addForward).toHaveBeenCalledOnce()
+  })
+
+  it('fails the connect, leaving no forward, when the bound port serves another runtime', async () => {
+    const state = boundPortSetup([6_768, 6_768], ['foreign'])
+    await expect(state.manager.ensure(createEnvironment('orcadDeployment'))).rejects.toThrow(
+      'orcad_identity_mismatch'
+    )
+    expect(state.removeForwardAndWait).toHaveBeenCalledWith('forward-1')
+    await state.manager.close('environment-1')
+    expect(state.removeForwardAndWait).toHaveBeenCalledOnce()
+  })
+
+  it('rebuilds at the re-read port after a host resume', async () => {
+    const state = boundPortSetup([58_520, 60_001])
+    const environment = createEnvironment('orcadDeployment')
+    await state.manager.ensure(environment)
+    state.probeTunnel.mockResolvedValue(false)
+
+    await state.manager.recoverAfterHostResume({
+      attempts: 1,
+      resolveEnvironment: () => environment,
+      timeoutMs: 5_000
+    })
+
+    expect(state.addForward.mock.calls.map((call) => call[4])).toEqual([58_520, 60_001])
+  })
+
+  it('starts a deploy tunnel at the bound port but keeps the preferred port for reuse', async () => {
+    const state = boundPortSetup([])
+    const localPort = await state.manager.start(
+      'environment-1',
+      state.target,
+      state.connection,
+      58_520,
+      { preferredPort: 6_768 }
+    )
+    expect(state.addForward.mock.calls[0]?.[4]).toBe(58_520)
+    state.addForward.mockClear()
+    // The persisted link names the preferred port, so the next ensure reuses this forward.
+    await state.manager.ensure({
+      ...createEnvironment('orcadDeployment'),
+      orcadDeployment: {
+        sshTargetId: 'ssh-1',
+        sshTargetGeneration: 7,
+        localPort,
+        remotePort: 6_768
+      }
+    })
+    expect(state.addForward).not.toHaveBeenCalled()
+  })
+})

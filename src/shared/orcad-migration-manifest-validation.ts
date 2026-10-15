@@ -5,9 +5,15 @@ import type {
   OrcadMigrationManifest,
   OrcadMigrationManifestSource
 } from './orcad-migration-manifest'
+import {
+  assertLocalWslScopeMatchesPayload,
+  parseLocalWslSource
+} from './orcad-migration-wsl-source-validation'
 import type { ProjectGroup } from './project-group-types'
 import type { Repo } from './repo-types'
 import {
+  MAX_ORCAD_MIGRATION_FOLDER_WORKSPACES,
+  MAX_ORCAD_MIGRATION_REPOSITORIES,
   assertUniqueIds,
   boundedArray,
   boundedStringArray,
@@ -21,12 +27,11 @@ import {
   parseOrcadMigrationDormantState
 } from './orcad-migration-dormant-state-validation'
 
+export { MAX_ORCAD_MIGRATION_FOLDER_WORKSPACES, MAX_ORCAD_MIGRATION_REPOSITORIES }
 export const ORCAD_MIGRATION_MANIFEST_VERSION = 1 as const
 export type OrcadMigrationManifestVersion = typeof ORCAD_MIGRATION_MANIFEST_VERSION
 export const MAX_ORCAD_MIGRATION_MANIFEST_BYTES = 768 * 1024
-export const MAX_ORCAD_MIGRATION_REPOSITORIES = 1_024
 export const MAX_ORCAD_MIGRATION_PROJECT_GROUPS = 4_096
-export const MAX_ORCAD_MIGRATION_FOLDER_WORKSPACES = 16_384
 export const MAX_ORCAD_MIGRATION_IMPORT_RECEIPTS = 64
 
 export function parseOrcadMigrationManifest(value: unknown): OrcadMigrationManifest {
@@ -64,6 +69,7 @@ export function parseOrcadMigrationManifest(value: unknown): OrcadMigrationManif
   if (bytes > MAX_ORCAD_MIGRATION_MANIFEST_BYTES) {
     throw new Error('orcad_migration_manifest_too_large')
   }
+  assertLocalWslScopeMatchesPayload(manifest)
   return manifest
 }
 
@@ -144,6 +150,13 @@ function parseSource(value: unknown): OrcadMigrationManifestSource {
   if (!isRecord(value)) {
     throw new Error('orcad_migration_manifest_source_invalid')
   }
+  if (value.kind === 'local-wsl') {
+    return parseLocalWslSource(value)
+  }
+  // An explicit 'ssh-relay' is refused too: SSH has exactly one encoding, so one digest.
+  if (value.kind !== undefined) {
+    throw new Error('orcad_migration_manifest_source_kind_unsupported')
+  }
   const generation = value.sshTargetGeneration
   if (generation !== null && (!Number.isSafeInteger(generation) || Number(generation) < 1)) {
     throw new Error('orcad_migration_manifest_source_generation_invalid')
@@ -163,7 +176,8 @@ function parseRepository(value: unknown): Repo {
   return copy
 }
 
-/** Throws the specific field error; narrowing only follows these checks. */
+// SAFETY: checks the fields import reads and throws the specific error; the rest pass through as
+// the client's own load normalized them.
 function isMigratedRepository(value: unknown): value is Repo {
   if (!isRecord(value)) {
     throw new Error('orcad_migration_manifest_repository_invalid')
@@ -187,7 +201,8 @@ function parseProjectGroup(value: unknown): ProjectGroup {
   return copy
 }
 
-/** Throws the specific field error; narrowing only follows these checks. */
+// SAFETY: checks the fields import reads and throws the specific error; the rest pass through as
+// the client's own load normalized them.
 function isMigratedProjectGroup(value: unknown): value is ProjectGroup {
   if (!isRecord(value)) {
     throw new Error('orcad_migration_manifest_project_group_invalid')
@@ -223,7 +238,8 @@ function parseFolderWorkspace(value: unknown): FolderWorkspace {
   return copy
 }
 
-/** Throws the specific field error; narrowing only follows these checks. */
+// SAFETY: checks the fields import reads and throws the specific error; the rest pass through as
+// the client's own load normalized them.
 function isMigratedFolderWorkspace(value: unknown): value is FolderWorkspace {
   if (!isRecord(value)) {
     throw new Error('orcad_migration_manifest_folder_workspace_invalid')
@@ -261,17 +277,17 @@ function parseReceipt(value: unknown): OrcadMigrationImportReceipt {
     repositoryIds: boundedStringArray(
       value.repositoryIds,
       MAX_ORCAD_MIGRATION_REPOSITORIES,
-      'receipt.repositoryIds'
+      'receipt.repositoryIds_invalid'
     ),
     projectGroupIds: boundedStringArray(
       value.projectGroupIds,
       MAX_ORCAD_MIGRATION_PROJECT_GROUPS,
-      'receipt.projectGroupIds'
+      'receipt.projectGroupIds_invalid'
     ),
     folderWorkspaceIds: boundedStringArray(
       value.folderWorkspaceIds,
       MAX_ORCAD_MIGRATION_FOLDER_WORKSPACES,
-      'receipt.folderWorkspaceIds'
+      'receipt.folderWorkspaceIds_invalid'
     )
   }
 }

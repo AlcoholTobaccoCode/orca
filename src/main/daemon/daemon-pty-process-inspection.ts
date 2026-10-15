@@ -1,6 +1,6 @@
 import { isShellProcess } from '../../shared/agent-detection'
 import { DaemonPtyBufferSnapshots } from './daemon-pty-buffer-snapshots'
-import { parsePtySessionId } from './pty-session-id'
+import { parsePtySessionId } from '../../shared/pty-session-id-format'
 import {
   COMPLETION_PROCESS_INSPECTION_PROTOCOL_VERSION,
   GET_FOREGROUND_PROCESS_PROTOCOL_VERSION,
@@ -127,7 +127,7 @@ export abstract class DaemonPtyProcessInspection extends DaemonPtyBufferSnapshot
       // Why: an unminted session id (worktreeId === null) can't be tied to a live worktree, so it's treated as an orphan.
       const { worktreeId } = parsePtySessionId(session.sessionId)
 
-      if (!this.recoveryOnly && (worktreeId === null || !validWorktreeIds.has(worktreeId))) {
+      if (worktreeId === null || !validWorktreeIds.has(worktreeId)) {
         try {
           await this.client.request('kill', { sessionId: session.sessionId })
         } catch {

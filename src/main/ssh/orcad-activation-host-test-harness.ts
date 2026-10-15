@@ -9,6 +9,8 @@ import {
   withActivatedVersion,
   type OrcadActivationRecord
 } from './orcad-activation-record'
+import { isSnapshotCaptureCommand } from './orcad-snapshot-capture-command'
+import { sshCommandExitError } from './ssh-relay-exec-command'
 
 export const OLD = '0.1.0+aa01'
 export const NEW = '0.2.0+bb01'
@@ -18,10 +20,22 @@ const MIGRATION = '|migrated-by-new'
 
 export type CrashMode = 'before' | 'after'
 
+/** The one-shot readiness read, or the launch loop's host-side wait. */
+export function isReadinessRead(command: string): boolean {
+  return command.startsWith('head -c ') || command.includes('orcad_readiness_wait')
+}
+
+const WAKE_OWNER = '.orca-fence-owner'
+const FENCE_GUARD =
+  /^\[ "\$\(cat '[^']*' 2>\/dev\/null\)" = '([^']*)' \] \|\| \{ echo (__ORCAD_FENCE_LOST__; exit 75|SUPERSEDED; exit 0); \};\s*/u
+
 export class FakeOrcadHost {
   record: string | null = null
   journal: string | null = null
   fence = false
+  /** Set by a recovery takeover, which recreates the lock fresh; the ownerless mark clears it. */
+  fenceFresh = false
+  wakeOwner: string | null = null
   readonly alive = new Set<string>()
   readonly pidFiles = new Set<string>()
   data = 'profiles-v1'
@@ -32,6 +46,8 @@ export class FakeOrcadHost {
   crashMode: CrashMode = 'before'
   /** How the slot's managed-stop command behaves: orcad exits, or keeps serving. */
   managedStop: 'exits' | 'stays' | 'stays-dispatched' = 'exits'
+  /** What the daemon reports at a managed stop's terminal fence. */
+  retirement: 'retired' | 'live' | 'unverifiable' = 'retired'
   readonly dispatched = new Set<string>()
 
   static deployedOld(): FakeOrcadHost {
@@ -106,12 +122,53 @@ export class FakeOrcadHost {
     })
   }
 
-  acquireFence(): void {
+  /** Returns false where a stale-only takeover would answer busy. */
+  acquireFence(options?: { allowStaleTakeover?: boolean; owner?: { token: string } }): boolean {
+    if (options?.allowStaleTakeover && this.fence && this.fenceFresh) {
+      return false
+    }
+    this.fenceFresh = options?.allowStaleTakeover === true && this.fence
     this.fence = true
+    // The real lock writes the holder's generation token in the command that creates it.
+    this.wakeOwner = options?.owner?.token ?? this.wakeOwner
+    return true
   }
 
   exec(command: string): string {
     this.commands.push(command)
+    return this.execInner(command)
+  }
+
+  private execInner(command: string): string {
+    const guard = FENCE_GUARD.exec(command)
+    if (guard) {
+      const owned = this.fence && this.wakeOwner === guard[1]
+      if (command.includes('echo RELEASED')) {
+        return owned
+          ? this.mutate(() => {
+              this.journal = null
+              this.fence = false
+              this.wakeOwner = null
+              return 'RELEASED'
+            })
+          : 'SUPERSEDED'
+      }
+      if (!owned) {
+        throw sshCommandExitError(command, 75, '__ORCAD_FENCE_LOST__\n')
+      }
+      return this.execInner(command.slice(guard[0].length))
+    }
+    if (command.startsWith('touch -m -t 200001010000')) {
+      this.fenceFresh = false
+      return ''
+    }
+    // The holder's token lives inside the fence's lock dir, so the fence's release drops it.
+    // A state mutation's fence heartbeat names the token only to check it is still its own.
+    if (command.includes(WAKE_OWNER) && !command.includes('orcad-state-mutation.lock')) {
+      return this.wakeOwner === null || !this.fence
+        ? '__ORCAD_RECORD_ABSENT__\n'
+        : `__ORCAD_RECORD_PRESENT__\n${this.wakeOwner}`
+    }
     const version = /\/orcad-(\d+\.\d+\.\d+\+[0-9a-f]+)/u.exec(command)?.[1] ?? null
     const snapshot = /orcad-state-snapshots\/([A-Za-z0-9][A-Za-z0-9.+-]*)/u.exec(command)?.[1]
     if (command.includes('__ORCAD_RECORD_PRESENT__') && command.includes('orcad.lock')) {
@@ -168,7 +225,7 @@ export class FakeOrcadHost {
         return '9999'
       })
     }
-    if (command.startsWith('head -c ') && version) {
+    if (isReadinessRead(command) && version) {
       return this.alive.has(version) ? readyLine(version) : ''
     }
     if (command.includes('echo PRESENT') && snapshot) {
@@ -177,7 +234,7 @@ export class FakeOrcadHost {
     if (command.includes('verdict=UNCHANGED') && snapshot) {
       return this.snapshots.get(snapshot) === this.data ? 'UNCHANGED' : 'CHANGED'
     }
-    if (command.includes('-cf') && snapshot) {
+    if (isSnapshotCaptureCommand(command) && snapshot) {
       return this.mutate(() => {
         if (this.data === '') {
           return 'EMPTY'
@@ -229,7 +286,7 @@ export class FakeOrcadHost {
       kind: 'orcad_managed_stop_completion',
       verdict,
       receiptPersisted: verdict === 'exited',
-      ...(verdict === 'exited' ? { retirement: 'retired' } : {})
+      ...(verdict === 'exited' ? { retirement: this.retirement } : {})
     })
   }
 }

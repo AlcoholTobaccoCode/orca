@@ -1,8 +1,13 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { getManagedOrcadOwnerEnvironmentId } from '../../shared/managed-orcad-ssh-owner'
+import { getManagedOrcadFenceEnvironmentId } from '../../shared/managed-orcad-ssh-owner'
 import { getRuntimeEnvironmentSidecarPath } from '../../shared/runtime-environment-sidecar'
 import { listEnvironments } from '../../shared/runtime-environment-store'
+import {
+  listOrcadMigrationSourceCutovers,
+  writeOrcadMigrationSourceCutover
+} from './orcad-migration-cutover-journal'
+import { orcadMigrationCutoverFixture } from './orcad-migration-cutover-fixture'
 import {
   createManagedLifecycleHarness,
   MANAGED_VERSION
@@ -30,7 +35,7 @@ vi.mock('./ssh-target-registry', () => ({
 }))
 vi.mock('./orcad-remote-context', () => ({ resolveOrcadRemoteContext: mocks.resolveContext }))
 vi.mock('./orcad-terminal-census-client', () => ({ collectManagedTerminalCensus: mocks.census }))
-vi.mock('./orcad-remote-stop', () => ({ decommissionRemoteOrcad: mocks.decommission }))
+vi.mock('./orcad-remote-decommission', () => ({ decommissionRemoteOrcad: mocks.decommission }))
 vi.mock('./orcad-activation-recovery', () => ({ recoverInterruptedOrcadActivation: mocks.recover }))
 vi.mock('./orcad-activation-transaction-store', () => ({
   readOrcadActivationTransaction: async () => mocks.state.transaction
@@ -63,7 +68,7 @@ const stop = (isActive = false) =>
 
 function expectStillLinked(): void {
   expect(listEnvironments(harness.userDataPath)[0]?.orcadDeployment).toBeDefined()
-  expect(getManagedOrcadOwnerEnvironmentId(harness.current().owner)).toBe('environment-1')
+  expect(getManagedOrcadFenceEnvironmentId(harness.current())).toBe('environment-1')
   expect(mocks.retire).not.toHaveBeenCalled()
   expect(mocks.closeTunnel).not.toHaveBeenCalled()
 }
@@ -81,6 +86,11 @@ afterEach(() => rmSync(harness.userDataPath, { recursive: true, force: true }))
 
 describe('stopManagedOrcadEnvironment', () => {
   it('unlinks the server only after the host proves orcad exited', async () => {
+    writeOrcadMigrationSourceCutover(harness.userDataPath, {
+      ...orcadMigrationCutoverFixture('migration-1', 'ssh-1', { environmentId: 'environment-1' }),
+      phase: 'destination-committed',
+      sourceRetainedAt: '2026-10-01T00:00:00.000Z'
+    })
     mocks.decommission.mockResolvedValueOnce({
       outcome: 'decommissioned',
       version: MANAGED_VERSION,
@@ -99,10 +109,12 @@ describe('stopManagedOrcadEnvironment', () => {
     expect(
       readFileSync(getRuntimeEnvironmentSidecarPath(harness.userDataPath), 'utf8')
     ).not.toContain('orcadDeployment')
-    expect(harness.current().owner).toBeUndefined()
+    expect(harness.current().orcadFence).toBeUndefined()
     expect(harness.flushes).toHaveLength(1)
     expect(mocks.retire).toHaveBeenCalledWith('environment-1')
     expect(mocks.closeTunnel).toHaveBeenCalledWith('environment-1')
+    // Its retained journal would otherwise block every later conversion of the host.
+    expect(listOrcadMigrationSourceCutovers(harness.userDataPath)).toEqual([])
   })
 
   it.each([
@@ -140,6 +152,31 @@ describe('stopManagedOrcadEnvironment', () => {
     })
     await expect(stop()).resolves.toMatchObject({ outcome: 'unlinked', verdict: 'exited' })
     expect(mocks.decommission).not.toHaveBeenCalled()
+  })
+
+  it('starts over, never reading live, when another run settled the journal first', async () => {
+    mocks.state.transaction = { operation: 'decommission', activeVersion: MANAGED_VERSION }
+    mocks.recover.mockImplementationOnce(async () => {
+      mocks.state.transaction = null
+      return { outcome: 'none' }
+    })
+    mocks.decommission.mockResolvedValueOnce({
+      outcome: 'decommissioned',
+      version: MANAGED_VERSION,
+      retirement: null
+    })
+    await expect(stop()).resolves.toMatchObject({ outcome: 'unlinked', verdict: 'exited' })
+
+    rmSync(harness.userDataPath, { recursive: true, force: true })
+    harness = createManagedLifecycleHarness()
+    mocks.state.store = harness.targetStore
+    mocks.state.transaction = { operation: 'decommission', activeVersion: MANAGED_VERSION }
+    mocks.recover.mockResolvedValue({ outcome: 'none' })
+    await expect(stop()).resolves.toMatchObject({
+      outcome: 'refused',
+      verdict: 'unverifiable',
+      code: 'orcad_stop_journal_changed'
+    })
   })
 
   it('refuses while another interrupted operation holds the journal', async () => {

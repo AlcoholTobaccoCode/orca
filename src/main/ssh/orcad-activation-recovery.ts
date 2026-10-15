@@ -24,6 +24,9 @@ import {
   recoverOrcadIncumbent,
   type OrcadIncumbentRecoveryOptions
 } from './orcad-incumbent-recovery'
+import type { OrcadManagedRefusal } from '../../shared/orcad-managed-runtime'
+import { resumeInterruptedOrcadCandidate } from './orcad-interrupted-candidate-resume'
+import { errorMessage } from '../../shared/error-message'
 
 export type OrcadActivationRecoveryResult =
   | { outcome: 'none' }
@@ -34,9 +37,11 @@ export type OrcadActivationRecoveryResult =
       activeVersion: string | null
       readiness: ServeReadiness | null
     }
-  | { outcome: 'refused'; verdict: 'live' | 'unverifiable'; code: string; reason: string }
+  | OrcadManagedRefusal
 
 export type OrcadActivationRecoveryOptions = OrcadIncumbentRecoveryOptions
+
+export const ORCAD_RECOVERY_UNVERIFIABLE_CODE = 'orcad_recovery_unverifiable'
 
 export async function recoverInterruptedOrcadActivation(
   options: OrcadActivationRecoveryOptions
@@ -73,7 +78,7 @@ export async function recoverInterruptedOrcadActivation(
     return {
       outcome: 'refused',
       verdict: 'unverifiable',
-      code: 'orcad_recovery_unverifiable',
+      code: ORCAD_RECOVERY_UNVERIFIABLE_CODE,
       reason:
         `The interrupted activation could not be reconciled safely: ${errorMessage(error)} ` +
         'The host remains fenced.'
@@ -113,13 +118,28 @@ export async function reconcileOrcadTransaction(
       readiness: await ensureOrcadSlotServing(options, identity)
     }
   }
+  if (transaction.operation === 'activate' && plan.launchedVersion) {
+    const readiness = await resumeInterruptedOrcadCandidate(options, transaction)
+    if (readiness && 'outcome' in readiness) {
+      return readiness
+    }
+    if (readiness) {
+      return {
+        outcome: 'recovered',
+        resolution: 'committed',
+        activeVersion: transaction.candidateVersion,
+        readiness
+      }
+    }
+  }
   const recovery = await recoverOrcadIncumbent(options, {
     transactionStartedAt: transaction.startedAt,
     launchedVersion: plan.launchedVersion,
     incumbent: plan.activeVersion
       ? await resolveOrcadSlotIdentity(options, plan.activeVersion)
       : null,
-    restoreState: plan.restoreState
+    restoreState: plan.restoreState,
+    launchedFromState: plan.launchedFromState
   })
   return recovery.outcome === 'refused'
     ? recovery
@@ -129,8 +149,4 @@ export async function reconcileOrcadTransaction(
         activeVersion: plan.activeVersion,
         readiness: recovery.readiness
       }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }

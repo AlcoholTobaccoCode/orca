@@ -2,13 +2,23 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { getAppEnvironment } from '../../shared/app-environment'
 import { encodePairingOffer, PAIRING_OFFER_VERSION } from '../../shared/pairing'
-import { getManagedOrcadOwnerEnvironmentId } from '../../shared/managed-orcad-ssh-owner'
+import { getManagedOrcadFenceEnvironmentId } from '../../shared/managed-orcad-ssh-owner'
+import { writeOrcadMigrationSourceCutover } from './orcad-migration-cutover-journal'
+import { orcadMigrationCutoverFixture } from './orcad-migration-cutover-fixture'
 import { listEnvironments } from '../../shared/runtime-environment-store'
 import type { SshTarget } from '../../shared/ssh-types'
 import { getRemoteHostPlatform } from './ssh-remote-platform'
 import { SshTargetOrcadClaims } from './ssh-target-orcad-claims'
 import { emptyDependentStateStore } from './ssh-target-orcad-dependents-fixture'
+import {
+  withDeactivatedVersion,
+  withDeactivatedVersionCommitted,
+  type OrcadActivationRecord
+} from './orcad-activation-record'
+import { ORCAD_ACTIVATION_POLICY_REFUSED_CODE } from './orcad-installed-activation'
+import type { OrcadDeployOptions } from './orcad-remote-deploy'
 
 const mocks = vi.hoisted(() => {
   const state: { store: unknown } = { store: null }
@@ -16,7 +26,6 @@ const mocks = vi.hoisted(() => {
     state,
     events: new Array<string>(),
     connect: vi.fn(),
-    hasDirectAuthority: vi.fn(),
     resolveContext: vi.fn(),
     recover: vi.fn(),
     readRecord: vi.fn(),
@@ -25,14 +34,15 @@ const mocks = vi.hoisted(() => {
     startTunnel: vi.fn(),
     ensureTunnel: vi.fn(),
     closeTunnel: vi.fn(),
-    readTransaction: vi.fn()
+    readTransaction: vi.fn(),
+    wake: vi.fn(),
+    localVersion: vi.fn()
   }
 })
 
 vi.mock('./ssh-target-registry', () => ({
   getSshConnectionManager: () => ({ connect: mocks.connect }),
-  getSshTargetRegistryStore: () => mocks.state.store,
-  hasRegisteredDirectSshAuthority: mocks.hasDirectAuthority
+  getSshTargetRegistryStore: () => mocks.state.store
 }))
 vi.mock('./orcad-remote-context', () => ({ resolveOrcadRemoteContext: mocks.resolveContext }))
 vi.mock('./orcad-activation-recovery', () => ({ recoverInterruptedOrcadActivation: mocks.recover }))
@@ -41,11 +51,22 @@ vi.mock('./orcad-activation-transaction-store', () => ({
   readOrcadActivationTransaction: mocks.readTransaction
 }))
 vi.mock('./orcad-remote-deploy', () => ({ deployOrcad: mocks.deploy }))
-vi.mock('./orcad-artifact-materializer', () => ({
+vi.mock('../orcad/orcad-artifact-materializer', () => ({
   materializeOrcadArtifact: async () => '/local/orcad'
 }))
+vi.mock('./orcad-managed-wake', () => ({ wakeStoppedManagedOrcad: mocks.wake }))
+vi.mock('./orcad-remote-build-hash', () => ({
+  readRemoteOrcadBuildHash: async () => 'running-hash'
+}))
+vi.mock('./remote-versioned-install', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  readLocalFullVersion: mocks.localVersion
+}))
 vi.mock('./orcad-local-build-hash', () => ({ computeLocalOrcadBuildHash: () => 'build-hash' }))
-vi.mock('./orcad-active-readiness', () => ({ probeActiveOrcadReadiness: mocks.probe }))
+vi.mock('./orcad-active-readiness', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  probeActiveOrcadReadiness: mocks.probe
+}))
 vi.mock('./orcad-terminal-census-client', () => ({
   collectManagedTerminalCensus: async () => ({
     liveSessions: 0,
@@ -65,8 +86,7 @@ const { createManagedOrcadEnvironment, getManagedOrcadRuntimeStatus } =
 const VERSION = '0.1.0+abc123'
 const emptyRecord = { active: null, previous: null, activatedAt: null, snapshot: null }
 
-function readiness() {
-  const endpoint = 'ws://127.0.0.1:6768'
+function readiness(endpoint = 'ws://127.0.0.1:6768') {
   return {
     runtimeId: 'runtime-1',
     boundEndpoint: endpoint,
@@ -124,7 +144,6 @@ beforeEach(() => {
   userDataPath = mkdtempSync(join(tmpdir(), 'orcad-deployment-test-'))
   target = { id: 'ssh-1', label: 'Builder', host: 'builder', port: 22, username: 'dev' }
   setupStore()
-  mocks.hasDirectAuthority.mockReturnValue(false)
   mocks.connect.mockImplementation(async () => {
     mocks.events.push('connect')
     return {}
@@ -144,6 +163,8 @@ beforeEach(() => {
   mocks.startTunnel.mockResolvedValue(46_768)
   mocks.closeTunnel.mockResolvedValue(undefined)
   mocks.ensureTunnel.mockResolvedValue(undefined)
+  mocks.localVersion.mockReturnValue(VERSION)
+  mocks.wake.mockResolvedValue({ outcome: 'serving' })
 })
 
 afterEach(() => rmSync(userDataPath, { recursive: true, force: true }))
@@ -165,7 +186,7 @@ describe('createManagedOrcadEnvironment', () => {
       remotePort: 6_768
     })
     expect(environment?.connectionDependency).toBe('ssh-tunnel')
-    expect(getManagedOrcadOwnerEnvironmentId(target.owner)).toBe(environment?.id)
+    expect(getManagedOrcadFenceEnvironmentId(target)).toBe(environment?.id)
     expect(target.orcadProvisioning).toEqual({ requestId: environment?.id, name: 'Managed' })
     expect(JSON.stringify(result)).not.toContain('device-token')
     expect(mocks.probe).toHaveBeenCalledWith(
@@ -178,18 +199,267 @@ describe('createManagedOrcadEnvironment', () => {
     expect(mocks.closeTunnel).not.toHaveBeenCalled()
   })
 
+  it('tunnels to the port orcad bound when 6768 is taken, and keeps 6768 as its launch port', async () => {
+    mocks.probe.mockResolvedValue(readiness('ws://127.0.0.1:58520'))
+    await deploy()
+
+    const [, , , remotePort, checks] = mocks.startTunnel.mock.calls[0] ?? []
+    expect(remotePort).toBe(58_520)
+    expect(checks).toMatchObject({ preferredPort: 6_768 })
+    expect(listEnvironments(userDataPath)[0]?.orcadDeployment?.remotePort).toBe(6_768)
+  })
+
   it('deploys an empty host with a zero census and an unknown one over an active slot', async () => {
     await deploy()
     expect(mocks.deploy.mock.calls[0]?.[0]).toMatchObject({
       census: { liveSessions: 0, startedSinceActivation: 0, daemonProtocolVersion: null },
       nodePath: ''
     })
+    // SSH hosts keep re-hashing the runtime on every deploy.
+    expect(mocks.deploy.mock.calls[0]?.[0]).not.toHaveProperty('recordedNodeRuntimeProbe')
+  })
+
+  describe('admitting a host another desktop stopped, under the fence', () => {
+    const servedBy = (appVersion: string | null, active: string): OrcadActivationRecord => ({
+      schemaVersion: 1,
+      active,
+      previous: null,
+      activatedAt: '2026-10-01T00:00:00.000Z',
+      snapshot: null,
+      ...(appVersion ? { activeAppVersion: appVersion } : {})
+    })
+    const admitOn = async (
+      record: OrcadActivationRecord,
+      options: { force?: boolean } = {}
+    ): Promise<{ admitted: string | null; result: unknown }> => {
+      vi.spyOn(getAppEnvironment(), 'getVersion').mockReturnValue('1.5.0')
+      let admitted: string | null = null
+      mocks.deploy.mockImplementationOnce(async (deployOptions: OrcadDeployOptions) => {
+        admitted = deployOptions.admitRecord?.(record, VERSION) ?? null
+        return admitted
+          ? {
+              outcome: 'installed-not-activated',
+              fullVersion: VERSION,
+              code: ORCAD_ACTIVATION_POLICY_REFUSED_CODE,
+              reason: admitted
+            }
+          : { outcome: 'installed-and-activated', fullVersion: VERSION }
+      })
+      const result = await createManagedOrcadEnvironment(userDataPath, {
+        name: 'Managed',
+        sshTargetId: 'ssh-1',
+        ...options
+      })
+      return { admitted, result }
+    }
+
+    it('redeploys a host an older build stopped without naming its version', async () => {
+      // What every Stop that predates keeping the app version commits.
+      const legacy = withDeactivatedVersion(servedBy('1.4.0', '0.1.0+old'))
+      expect(legacy.activeAppVersion).toBeUndefined()
+      const { admitted, result } = await admitOn(legacy)
+      expect(admitted).toBeNull()
+      expect(result).toMatchObject({ outcome: 'created', activeVersion: VERSION })
+    })
+
+    it('refuses an older build on a host a newer desktop stopped, naming both versions', async () => {
+      const stopped = withDeactivatedVersionCommitted(servedBy('1.6.0', '0.1.0+new'))
+      const { admitted, result } = await admitOn(stopped)
+      expect(admitted).toContain('Orca 1.6.0')
+      expect(admitted).toContain('(1.5.0)')
+      expect(result).toMatchObject({
+        outcome: 'deferred',
+        code: ORCAD_ACTIVATION_POLICY_REFUSED_CODE,
+        forceable: true
+      })
+    })
+
+    it('redeploys a host the same Orca version stopped', async () => {
+      const stopped = withDeactivatedVersionCommitted(servedBy('1.5.0', '0.1.0+other'))
+      const { admitted, result } = await admitOn(stopped)
+      expect(admitted).toBeNull()
+      expect(result).toMatchObject({ outcome: 'created' })
+    })
+
+    it('restarts the stopped build itself even when a newer desktop stopped it', async () => {
+      const stopped = withDeactivatedVersionCommitted(servedBy('1.6.0', VERSION))
+      expect((await admitOn(stopped)).admitted).toBeNull()
+    })
+
+    it('runs this version anyway when the deploy is forced', async () => {
+      const stopped = withDeactivatedVersionCommitted(servedBy('1.6.0', '0.1.0+new'))
+      const { admitted, result } = await admitOn(stopped, { force: true })
+      expect(admitted).toBeNull()
+      expect(result).toMatchObject({ outcome: 'created' })
+    })
+  })
+
+  describe('a host another Orca version already serves', () => {
+    const OTHER = '0.0.9+old111'
+    let hostAppVersion = '9.9.9'
+    const activeRecord = (active: string): OrcadActivationRecord => ({
+      schemaVersion: 1,
+      active,
+      previous: null,
+      activatedAt: '2026-10-01T00:00:00.000Z',
+      snapshot: null,
+      activeAppVersion: hostAppVersion
+    })
+    beforeEach(() => {
+      mocks.resolveContext.mockImplementation(async (claimed: SshTarget) => ({
+        activationRecord: activeRecord(OTHER),
+        serverTarget: 'linux-x64-glibc',
+        connection: {},
+        host: getRemoteHostPlatform('linux-x64'),
+        remoteHome: '/home/dev',
+        target: claimed,
+        userDataDir: '/home/dev/.orca'
+      }))
+      mocks.readRecord.mockImplementation(async () => activeRecord(OTHER))
+      mocks.wake.mockResolvedValue({ outcome: 'serving' })
+    })
+
+    it.each(['9.9.9', '0.0.1'])(
+      'pairs with a build Orca %s runs, without uploading or restarting it',
+      async (appVersion) => {
+        vi.spyOn(getAppEnvironment(), 'getVersion').mockReturnValue('1.5.0')
+        hostAppVersion = appVersion
+        const result = await deploy()
+
+        expect(mocks.deploy).not.toHaveBeenCalled()
+        expect(mocks.probe).toHaveBeenCalledWith(
+          expect.objectContaining({ remoteInstallDir: expect.stringContaining(OTHER) }),
+          { buildHash: 'running-hash', fullVersion: OTHER }
+        )
+        expect(result).toMatchObject({ outcome: 'already-current', activeVersion: OTHER })
+        const [environment] = listEnvironments(userDataPath)
+        expect(environment?.orcadDeployment).toMatchObject({
+          sshTargetId: 'ssh-1',
+          localPort: 46_768
+        })
+      }
+    )
+
+    it('pairs a relay migration with the running build too, under its journaled fence', async () => {
+      target = { ...target, orcadFence: { environmentId: 'env-m' }, generation: 9 }
+      writeOrcadMigrationSourceCutover(
+        userDataPath,
+        orcadMigrationCutoverFixture('m-1', 'ssh-1', { generation: 9, environmentId: 'env-m' })
+      )
+      const result = await createManagedOrcadEnvironment(userDataPath, {
+        name: 'Managed',
+        sshTargetId: 'ssh-1',
+        migration: true
+      })
+
+      // Its own deploy would wait on a terminal count only the paired server can give.
+      expect(mocks.deploy).not.toHaveBeenCalled()
+      expect(result).toMatchObject({ outcome: 'already-current', activeVersion: OTHER })
+      expect(listEnvironments(userDataPath).map((entry) => entry.id)).toEqual(['env-m'])
+      expect(target.orcadProvisioning).toBeUndefined()
+    })
+
+    it('starts nothing for a migration whose running build is unverifiable', async () => {
+      target = { ...target, orcadFence: { environmentId: 'env-m' }, generation: 9 }
+      writeOrcadMigrationSourceCutover(
+        userDataPath,
+        orcadMigrationCutoverFixture('m-1', 'ssh-1', { generation: 9, environmentId: 'env-m' })
+      )
+      mocks.wake.mockResolvedValueOnce({ outcome: 'unverifiable' })
+      await expect(
+        createManagedOrcadEnvironment(userDataPath, {
+          name: 'Managed',
+          sshTargetId: 'ssh-1',
+          migration: true
+        })
+      ).rejects.toThrow('process state is unverifiable')
+      expect(mocks.deploy).not.toHaveBeenCalled()
+      expect(listEnvironments(userDataPath)).toEqual([])
+    })
+
+    it('deploys its own build as before when forced', async () => {
+      await createManagedOrcadEnvironment(userDataPath, {
+        name: 'Managed',
+        sshTargetId: 'ssh-1',
+        force: true
+      })
+      expect(mocks.wake).not.toHaveBeenCalled()
+      expect(mocks.deploy).toHaveBeenCalledOnce()
+    })
+
+    it('keeps the deploy path for a host already on this build, waking it after', async () => {
+      mocks.localVersion.mockReturnValue(OTHER)
+      mocks.deploy.mockImplementationOnce(async () => {
+        mocks.events.push('deploy')
+        return { outcome: 'already-active', fullVersion: OTHER }
+      })
+      mocks.wake.mockImplementationOnce(async () => {
+        mocks.events.push('wake')
+        return { outcome: 'serving' }
+      })
+      mocks.probe.mockImplementation(async () => {
+        mocks.events.push('probe')
+        return readiness()
+      })
+      await expect(deploy()).resolves.toMatchObject({ outcome: 'already-current' })
+      expect(mocks.events.filter((event) => event !== 'flush' && event !== 'connect')).toEqual([
+        'deploy',
+        'wake',
+        'probe'
+      ])
+    })
+
+    it('a host this build ran, rebooted or killed since, starts it and registers (#27284)', async () => {
+      mocks.localVersion.mockReturnValue(OTHER)
+      mocks.deploy.mockResolvedValueOnce({ outcome: 'already-active', fullVersion: OTHER })
+      mocks.wake.mockResolvedValueOnce({ outcome: 'started', readiness: readiness() })
+      await expect(deploy()).resolves.toMatchObject({
+        outcome: 'already-current',
+        activeVersion: OTHER
+      })
+      expect(mocks.wake.mock.calls[0]?.[0]).toMatchObject({ port: 6_768, remoteHome: '/home/dev' })
+      expect(listEnvironments(userDataPath)).toHaveLength(1)
+    })
+
+    it('starts nothing over an unverifiable slot on this build, and registers nothing', async () => {
+      mocks.localVersion.mockReturnValue(OTHER)
+      mocks.deploy.mockResolvedValueOnce({ outcome: 'already-active', fullVersion: OTHER })
+      mocks.wake.mockResolvedValueOnce({ outcome: 'unverifiable' })
+      mocks.probe.mockRejectedValueOnce(new Error('orcad process state is unverifiable.'))
+      await expect(deploy()).rejects.toThrow('unverifiable')
+      expect(listEnvironments(userDataPath)).toEqual([])
+    })
+
+    it('surfaces an abandoned update the wake could not recover on this build', async () => {
+      mocks.localVersion.mockReturnValue(OTHER)
+      mocks.deploy.mockResolvedValueOnce({ outcome: 'already-active', fullVersion: OTHER })
+      mocks.wake.mockResolvedValueOnce({ outcome: 'recovery-refused', reason: 'needs Recover' })
+      await expect(deploy()).rejects.toThrow('needs Recover')
+      expect(mocks.probe).not.toHaveBeenCalled()
+      expect(listEnvironments(userDataPath)).toEqual([])
+    })
+
+    it('pairs with a build a rebooted host stopped, after starting it (#28833)', async () => {
+      // A reboot leaves the record naming a slot whose process is gone; only a started server
+      // can count terminals, so the update check after pairing decides the update, not a guess.
+      mocks.wake.mockResolvedValueOnce({ outcome: 'started', readiness: readiness() })
+      const result = await deploy()
+      expect(mocks.deploy).not.toHaveBeenCalled()
+      expect(result).toMatchObject({ outcome: 'already-current', activeVersion: OTHER })
+    })
+
+    it('registers nothing and stops nothing when the running build is unverifiable', async () => {
+      mocks.wake.mockResolvedValueOnce({ outcome: 'unverifiable' })
+      await expect(deploy()).rejects.toThrow('process state is unverifiable')
+      expect(mocks.deploy).not.toHaveBeenCalled()
+      expect(listEnvironments(userDataPath)).toEqual([])
+    })
   })
 
   it('refuses a host with direct SSH projects before claiming or connecting', async () => {
     setupStore({ repos: [{ connectionId: 'ssh-1' }] })
     await expect(deploy()).rejects.toThrow('repositories or folder workspaces')
-    expect(target.owner).toBeUndefined()
+    expect(target.orcadFence).toBeUndefined()
     expect(mocks.connect).not.toHaveBeenCalled()
   })
 
@@ -214,15 +484,13 @@ describe('createManagedOrcadEnvironment', () => {
       getOrcadRuntimeClaims: () => new SshTargetOrcadClaims(store)
     }
     await expect(deploy()).rejects.toThrow('terminal-lease ×1 (pty-1 (expired))')
-    expect(target.owner).toBeUndefined()
+    expect(target.orcadFence).toBeUndefined()
     expect(mocks.connect).not.toHaveBeenCalled()
   })
 
-  it('refuses a connected direct SSH session and a taken server name', async () => {
-    mocks.hasDirectAuthority.mockReturnValueOnce(true)
-    await expect(deploy()).rejects.toThrow('Disconnect this SSH host')
+  it('refuses a taken server name', async () => {
     await deploy()
-    target = { ...target, id: 'ssh-2', owner: undefined }
+    target = { ...target, id: 'ssh-2', orcadFence: undefined }
     await expect(
       createManagedOrcadEnvironment(userDataPath, { name: 'Managed', sshTargetId: 'ssh-2' })
     ).rejects.toThrow('already exists')
@@ -255,14 +523,14 @@ describe('createManagedOrcadEnvironment', () => {
     })
     await expect(deploy()).resolves.toMatchObject({ outcome: 'deferred', forceable: false })
     expect(listEnvironments(userDataPath)).toEqual([])
-    expect(getManagedOrcadOwnerEnvironmentId(target.owner)).not.toBeNull()
+    expect(getManagedOrcadFenceEnvironmentId(target)).not.toBeNull()
     expect(mocks.startTunnel).not.toHaveBeenCalled()
   })
 
   it('resumes an interrupted deploy under the environment id its claim recorded', async () => {
     mocks.probe.mockRejectedValueOnce(new Error('readiness unverifiable'))
     await expect(deploy()).rejects.toThrow('readiness unverifiable')
-    const claimedId = getManagedOrcadOwnerEnvironmentId(target.owner)
+    const claimedId = getManagedOrcadFenceEnvironmentId(target)
     expect(claimedId).not.toBeNull()
     mocks.deploy.mockResolvedValueOnce({ outcome: 'already-active', fullVersion: VERSION })
     const result = await deploy()
@@ -308,6 +576,37 @@ describe('createManagedOrcadEnvironment', () => {
   })
 })
 
+describe('createManagedOrcadEnvironment for a migration', () => {
+  it('deploys into its own journaled fence without leaving a provisioning intent', async () => {
+    target = { ...target, orcadFence: { environmentId: 'env-m' }, generation: 9 }
+    writeOrcadMigrationSourceCutover(
+      userDataPath,
+      orcadMigrationCutoverFixture('m-1', 'ssh-1', { generation: 9, environmentId: 'env-m' })
+    )
+    await expect(
+      createManagedOrcadEnvironment(userDataPath, {
+        name: 'Managed',
+        sshTargetId: 'ssh-1',
+        migration: true
+      })
+    ).resolves.toMatchObject({ outcome: 'created' })
+    expect(listEnvironments(userDataPath).map((entry) => entry.id)).toEqual(['env-m'])
+    expect(target.orcadProvisioning).toBeUndefined()
+  })
+
+  it('refuses a migration deploy whose fence has no journal, before connecting', async () => {
+    target = { ...target, orcadFence: { environmentId: 'env-m' }, generation: 9 }
+    await expect(
+      createManagedOrcadEnvironment(userDataPath, {
+        name: 'Managed',
+        sshTargetId: 'ssh-1',
+        migration: true
+      })
+    ).rejects.toThrow('orcad_migration_fence_required')
+    expect(mocks.connect).not.toHaveBeenCalled()
+  })
+})
+
 describe('getManagedOrcadRuntimeStatus', () => {
   it('reports the activation record and an interrupted transaction without repairing it', async () => {
     await deploy()
@@ -339,6 +638,7 @@ describe('getManagedOrcadRuntimeStatus', () => {
         startedAt: 'then'
       },
       terminals: { liveSessions: 0, startedSinceActivation: 0, daemonProtocolVersion: 39 },
+      migration: null,
       deferredUpdate: null
     })
     expect(mocks.recover).toHaveBeenCalledTimes(1)
@@ -354,6 +654,28 @@ describe('getManagedOrcadRuntimeStatus', () => {
     })
     await expect(getManagedOrcadRuntimeStatus(userDataPath, 'Managed')).resolves.toMatchObject({
       recovery: { operation: 'decommission', phase: 'stop-dispatched', version: VERSION }
+    })
+  })
+
+  it('reports an unfinished migration into the server', async () => {
+    await deploy()
+    const [environment] = listEnvironments(userDataPath)
+    writeOrcadMigrationSourceCutover(userDataPath, {
+      ...orcadMigrationCutoverFixture('m-2', 'ssh-1', {
+        generation: 9,
+        environmentId: environment!.id
+      }),
+      phase: 'destination-staged'
+    })
+    mocks.resolveContext.mockImplementation(async (claimed: SshTarget) => ({
+      activationRecord: { ...emptyRecord, active: VERSION },
+      connection: {},
+      host: getRemoteHostPlatform('linux-x64'),
+      remoteHome: '/home/dev',
+      target: claimed
+    }))
+    await expect(getManagedOrcadRuntimeStatus(userDataPath, 'Managed')).resolves.toMatchObject({
+      migration: { migrationId: 'm-2', phase: 'destination-staged' }
     })
   })
 

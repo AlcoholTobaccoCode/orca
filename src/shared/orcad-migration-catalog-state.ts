@@ -5,6 +5,8 @@ import {
   type OrcadMigrationManifest
 } from './orcad-migration-manifest'
 import { parseOrcadMigrationSnapshotUploadStates } from './orcad-migration-scrollback'
+import { parseOrcadMigrationBlobUploadStates } from './orcad-migration-blob-transfer'
+import { isRecord } from './orcad-migration-manifest-fields'
 
 export function parseOrcadMigrationCatalogState(
   value: unknown,
@@ -26,11 +28,13 @@ export function parseOrcadMigrationCatalogState(
       record.snapshotUploads,
       manifest.payload.dormantState?.terminalScrollbackSnapshots ?? []
     )
+    const blobUploads = parseOrcadMigrationBlobUploadStates(record.blobUploads)
     return {
       state: 'staged',
       ...migrationIdentity(manifest),
       stagedAt,
-      ...(snapshotUploads ? { snapshotUploads } : {})
+      ...(snapshotUploads ? { snapshotUploads } : {}),
+      ...(blobUploads ? { blobUploads } : {})
     }
   }
   if (record.state === 'committed') {
@@ -43,6 +47,10 @@ export function parseOrcadMigrationCatalogState(
       throw new Error('orcad_migration_catalog_state_receipt_invalid')
     }
     return { state: 'committed', ...migrationIdentity(manifest), receipt }
+  }
+  // No known arm is safe to assume for a newer host's state; stop with an actionable reason.
+  if (typeof record.state === 'string') {
+    throw new Error('orcad_migration_catalog_state_unsupported:client_update_required')
   }
   throw new Error('orcad_migration_catalog_state_invalid')
 }
@@ -78,10 +86,6 @@ function requireRecord(value: unknown): Record<string, unknown> {
     throw new Error('orcad_migration_catalog_state_invalid')
   }
   return value
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function requireDate(value: unknown): string {

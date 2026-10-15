@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import type * as DeployHelpers from './ssh-relay-deploy-helpers'
+import type * as ExecCommandModule from './ssh-relay-exec-command'
 import type * as InstallLock from './ssh-relay-install-lock'
 
-vi.mock('./ssh-relay-deploy-helpers', async (importOriginal) => ({
-  ...(await importOriginal<typeof DeployHelpers>()),
+vi.mock('./ssh-relay-exec-command', async (importOriginal) => ({
+  ...(await importOriginal<typeof ExecCommandModule>()),
   execCommand: vi.fn().mockResolvedValue('')
 }))
 vi.mock('./ssh-relay-install-lock', async (importOriginal) => ({
@@ -11,8 +11,8 @@ vi.mock('./ssh-relay-install-lock', async (importOriginal) => ({
   acquireInstallLock: vi.fn().mockResolvedValue(undefined)
 }))
 
-import { execCommand } from './ssh-relay-deploy-helpers'
-import { acquireInstallLock } from './ssh-relay-install-lock'
+import { execCommand } from './ssh-relay-exec-command'
+import { acquireInstallLock, RemoteInstallLockBusyError } from './ssh-relay-install-lock'
 import {
   parseOrcadActivationTransaction,
   planOrcadTransactionRecovery,
@@ -36,7 +36,6 @@ import {
 import { FakeOrcadHost, NEW, OLD } from './orcad-activation-host-test-harness'
 import { withRolledBackVersion } from './orcad-activation-record'
 import { getRemoteHostPlatform } from './ssh-remote-platform'
-import type { SshConnection } from './ssh-connection'
 
 const T = new Date('2026-02-02T00:00:00.000Z')
 const ID = '7f1c2a7e-6c1b-4a8e-9f0e-0a1b2c3d4e5f'
@@ -149,7 +148,11 @@ describe('planOrcadTransactionRecovery', () => {
         withOrcadRollbackPhase(rescued, 'rollback-state-restored', T),
         before
       )
-    ).toMatchObject({ launchedVersion: OLD })
+    ).toMatchObject({
+      launchedVersion: OLD,
+      // The target started from the restored snapshot; whether it changed that decides.
+      launchedFromState: { state: 'captured', dirName: before.snapshot?.dirName }
+    })
   })
 
   it('refuses when the record matches neither side', () => {
@@ -164,7 +167,7 @@ describe('planOrcadTransactionRecovery', () => {
 
 describe('activation fence', () => {
   const target = {
-    conn: {} as SshConnection,
+    conn: Object.create(null),
     host: getRemoteHostPlatform('linux-x64'),
     remoteHome: '/home/u'
   }
@@ -174,37 +177,75 @@ describe('activation fence', () => {
       .mock.calls.map(([, command]) => command)
       .filter((command) => command.includes('rm -'))
 
+  const orphanings = (): string[] =>
+    vi
+      .mocked(execCommand)
+      .mock.calls.map(([, command]) => command)
+      .filter((command) => command.includes('touch -m -t 200001010000'))
+
+  const locked = <T>(run: Parameters<typeof withOrcadActivationLock<T>>[1]): Promise<T> =>
+    withOrcadActivationLock(target, run, () => {
+      throw new Error('fence held')
+    })
+
+  it('answers a fence still held after a short wait, running nothing', async () => {
+    vi.clearAllMocks()
+    vi.mocked(acquireInstallLock).mockRejectedValueOnce(new RemoteInstallLockBusyError('/l', 0))
+    const run = vi.fn(async () => 'ran')
+    await expect(withOrcadActivationLock(target, run, () => 'held')).resolves.toBe('held')
+    expect(vi.mocked(acquireInstallLock).mock.calls[0]?.[3]).toMatchObject({ waitTimeoutMs: 5_000 })
+    expect(run).not.toHaveBeenCalled()
+    expect(removals()).toEqual([])
+  })
+
   it('never takes over a held fence by age, and removes the journal before the lock', async () => {
     vi.clearAllMocks()
-    await withOrcadActivationLock(target, async () => undefined)
+    await locked(async () => undefined)
     expect(vi.mocked(acquireInstallLock).mock.calls[0]?.[3]).toMatchObject({
       allowStaleTakeover: false,
       relayGcClaim: false
     })
     const [release] = removals()
+    // Only while the lock still carries this run's token; the journal goes before the lock.
+    expect(release).toMatch(
+      /^\[ "\$\(cat '[^']*\.orca-fence-owner' 2>\/dev\/null\)" = '[^']+' \] \|\| \{ echo SUPERSEDED; exit 0; \};/u
+    )
     expect(release?.indexOf('transaction.json')).toBeLessThan(
-      release?.indexOf("rm -rf '/home/u/.orca-remote/.orcad-activation-transaction'") ?? -1
+      release?.indexOf("mv '/home/u/.orca-remote/.orcad-activation-transaction/.install-lock'") ??
+        -1
     )
   })
 
   it('keeps the fence after an unconfirmed termination, a retained error, or retain()', async () => {
     vi.clearAllMocks()
     const lost = Object.assign(new Error('lost'), { sshChannelCloseConfirmed: false })
-    await expect(withOrcadActivationLock(target, () => Promise.reject(lost))).rejects.toBe(lost)
+    await expect(locked(() => Promise.reject(lost))).rejects.toBe(lost)
     await expect(
-      withOrcadActivationLock(target, async (lock) => {
+      locked(async (lock) => {
         lock.retainOnError()
         throw new Error('mid-transaction')
       })
     ).rejects.toThrow('mid-transaction')
-    await withOrcadActivationLock(target, async (lock) => lock.retain())
+    await locked(async (lock) => lock.retain())
+    expect(removals()).toEqual([])
+    // A finished run's fence is ownerless; one an unconfirmed command may still use stays fresh.
+    expect(orphanings()).toHaveLength(2)
+  })
+
+  it('marks a fence recovery retained as ownerless, so the next recovery need not wait', async () => {
+    vi.clearAllMocks()
+    await withStaleOrcadActivationRecoveryLock(target, async (lock) => lock.retain())
+    await expect(
+      withStaleOrcadActivationRecoveryLock(target, () => Promise.reject(new Error('refused')))
+    ).rejects.toThrow('refused')
+    expect(orphanings()).toHaveLength(2)
     expect(removals()).toEqual([])
   })
 
   it('releases after a recovered failure even though the run throws', async () => {
     vi.clearAllMocks()
     await expect(
-      withOrcadActivationLock(target, async (lock) => {
+      locked(async (lock) => {
         lock.retainOnError()
         lock.recovered()
         throw new Error('snapshot failed; incumbent restarted')

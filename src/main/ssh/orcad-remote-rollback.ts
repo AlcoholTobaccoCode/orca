@@ -13,25 +13,25 @@
  * before restoring would let the old build migrate the new build's state. The rescue copy of
  * the newer state, and the journal under the activation fence, make each step undoable.
  */
-import type { SshConnection } from './ssh-connection'
+import { logOrcadActivationOutcome } from './orcad-activation-outcome-log'
+import type { OrcadHostTransport } from './orcad-host-transport'
 import type { OrcadActivationRecord } from './orcad-activation-record'
 import type { OrcadTerminalCensus } from './orcad-update-plan'
 import type { OrcadActivationVerdict } from './orcad-activation-gate'
 import type { OrcadDaemonProtocolFacts } from './orcad-daemon-protocol-crossing'
 import { readOrcadActivationRecord } from './orcad-activation-record-store'
 import { sameOrcadActivationRecord } from './orcad-activation-transaction'
-import { readOrcadActivationTransaction } from './orcad-activation-transaction-store'
 import type { RemoteHostPlatform } from './ssh-remote-platform'
-import { assertPosixOrcadHost } from './orcad-remote-host-support'
 import {
   resolveOrcadActivationReadinessTimeout,
   withOrcadActivationLock
 } from './orcad-activation-lock'
+import { orcadActivationFenceRefusal } from './orcad-activation-fence-hold'
 import { ORCAD_STARTUP_READINESS_TIMEOUT_MS } from '../../shared/orcad-profile-preflight'
 import { rollbackOrcadLocked } from './orcad-rollback-transition'
 
 export type OrcadRollbackOptions = {
-  conn: SshConnection
+  conn: OrcadHostTransport
   host: RemoteHostPlatform
   remoteHome: string
   record: OrcadActivationRecord
@@ -44,8 +44,6 @@ export type OrcadRollbackOptions = {
   targetBuildHash: string
   /** The rollback target's daemon protocol facts, from the same copy. */
   targetDaemonProtocol: OrcadDaemonProtocolFacts
-  /** A fresh census for a failed target that changed state; see `orcad-incumbent-recovery.ts`. */
-  terminalsStartedSince?: (since: string) => Promise<number | null>
   readinessTimeoutMs?: number
   now?: () => Date
   sleep?: (ms: number) => Promise<void>
@@ -58,7 +56,6 @@ export type OrcadRollbackResult =
   | { outcome: 'failed'; code: string; reason: string }
 
 export async function rollbackOrcad(input: OrcadRollbackOptions): Promise<OrcadRollbackResult> {
-  assertPosixOrcadHost(input.host)
   const options = {
     ...input,
     readinessTimeoutMs: resolveOrcadActivationReadinessTimeout(
@@ -66,25 +63,30 @@ export async function rollbackOrcad(input: OrcadRollbackOptions): Promise<OrcadR
       ORCAD_STARTUP_READINESS_TIMEOUT_MS
     )
   }
-  return withOrcadActivationLock(options, async (lock) => {
-    if (await readOrcadActivationTransaction(options)) {
-      lock.retain()
-      return {
-        outcome: 'refused',
-        code: 'orcad_activation_recovery_required',
-        reason:
-          'An earlier activation on this host was interrupted. Recover it before rolling back.'
-      }
-    }
-    if (!sameOrcadActivationRecord(await readOrcadActivationRecord(options), options.record)) {
-      return {
-        outcome: 'refused',
-        code: 'orcad_rollback_record_changed',
-        reason:
-          'The host activation record changed while this rollback was waiting. Refresh the ' +
-          'host state and review the new rollback target before trying again.'
-      }
-    }
-    return rollbackOrcadLocked(options, lock)
-  })
+  return logOrcadActivationOutcome(
+    `rollback to ${options.record.previous ?? 'none'}`,
+    () =>
+      withOrcadActivationLock(
+        options,
+        async (lock) => {
+          if (
+            !sameOrcadActivationRecord(await readOrcadActivationRecord(options), options.record)
+          ) {
+            return {
+              outcome: 'refused',
+              code: 'orcad_rollback_record_changed',
+              reason:
+                'The host activation record changed while this rollback was waiting. Refresh the ' +
+                'host state and review the new rollback target before trying again.'
+            }
+          }
+          return rollbackOrcadLocked(options, lock)
+        },
+        async () => {
+          const { code, reason } = await orcadActivationFenceRefusal(options, 'rollback')
+          return { outcome: 'refused', code, reason }
+        }
+      ),
+    ['rolled-back']
+  )
 }

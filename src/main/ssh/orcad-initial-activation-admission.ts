@@ -9,7 +9,8 @@ import { ORCAD_LOCK_FILE_NAME } from '../orcad/orcad-instance-lock'
 import { PRIMARY_RUNTIME_METADATA_FILE } from '../../shared/runtime-bootstrap'
 import { shellEscape } from './ssh-connection-utils'
 import { selectOrcadSlotRuntimeCommand } from './orcad-remote-runtime'
-import { joinRemotePath, type RemoteHostPlatform } from './ssh-remote-platform'
+import { isWindowsRemoteHost, joinRemotePath, type RemoteHostPlatform } from './ssh-remote-platform'
+import { orcadWindowsSlotOpCommand } from './orcad-remote-windows-node'
 
 const OWNER_RECORD_MAX_BYTES = 64 * 1024
 
@@ -24,6 +25,10 @@ export function initialOrcadActivationAdmissionCommand(
   remoteInstallDir: string,
   legacyNodePath: string
 ): string {
+  if (isWindowsRemoteHost(host)) {
+    // Windows has no O_NOFOLLOW; the host script refuses links by lstat instead.
+    return orcadWindowsSlotOpCommand(host, remoteInstallDir, 'owner-admission', [userDataDir])
+  }
   const owners = [ORCAD_LOCK_FILE_NAME, PRIMARY_RUNTIME_METADATA_FILE].map((name) => ({
     name,
     path: joinRemotePath(host, userDataDir, name)

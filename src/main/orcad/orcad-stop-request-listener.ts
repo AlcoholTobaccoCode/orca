@@ -17,20 +17,18 @@ import {
   validateOrcadManagedStopRequest
 } from './orcad-managed-stop-request'
 import { claimOrcadManagedStopDecision } from './orcad-managed-stop-decision'
+import { withdrawOrcadManagedStopRequest } from './orcad-managed-stop-cancellation'
+import { hasErrorCode } from '../daemon/daemon-process-inspection'
 
 export type OrcadStopRequestListener = { close(): void }
 
 const DEFAULT_POLL_INTERVAL_MS = 1_000
 
-function isMissingFile(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT'
-}
-
-/** `consume` returns true when the request should stop orcad; a missing file throws ENOENT. */
-function listenForRequest(
+/** `consume` returns the request that should stop orcad, or null; a missing file throws ENOENT. */
+function listenForRequest<T>(
   requestPath: string,
-  consume: (path: string) => boolean,
-  onRequest: () => void,
+  consume: (path: string) => T | null,
+  onRequest: (request: T) => void,
   pollIntervalMs: number
 ): OrcadStopRequestListener {
   let closed = false
@@ -39,12 +37,11 @@ function listenForRequest(
     if (closed) {
       return
     }
+    let request: T | null
     try {
-      if (!consume(requestPath)) {
-        return
-      }
+      request = consume(requestPath)
     } catch (error) {
-      if (!isMissingFile(error)) {
+      if (!hasErrorCode(error, 'ENOENT')) {
         // Polling retries every interval; report each distinct refusal once.
         const failure = error instanceof Error ? error.message : String(error)
         if (failure !== lastFailure) {
@@ -54,9 +51,12 @@ function listenForRequest(
       }
       return
     }
+    if (request === null) {
+      return
+    }
     closed = true
     stop()
-    onRequest()
+    onRequest(request)
   }
   let watcher: FSWatcher | null = null
   try {
@@ -98,17 +98,24 @@ export function installOrcadStopRequestListeners(
   }
 ): OrcadStopRequestListener {
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
-  const listeners = [
+  // Declared first: a listener's initial check can consume a request and close before returning.
+  const listeners: OrcadStopRequestListener[] = []
+  const close = (): void => {
+    for (const listener of listeners) {
+      listener.close()
+    }
+  }
+  listeners.push(
     listenForRequest(
       join(options.installRoot, ORCAD_STOP_REQUEST_FILENAME),
       (path) => {
         unlinkSync(path)
         return true
       },
-      onRequest,
+      () => onRequest(),
       pollIntervalMs
     )
-  ]
+  )
   const managedStop = options.managedStop
   if (managedStop) {
     const prepare = options.beforeManagedStop ?? (async () => {})
@@ -119,8 +126,13 @@ export function installOrcadStopRequestListeners(
           const request = validateOrcadManagedStopRequest(managedStop, path)
           // A cancelled request is never acted on; keep listening for the next transaction.
           if (claimOrcadManagedStopDecision(request, 'dispatched') === 'canceled') {
+            // A cancelled request left behind would block every later transaction's request.
+            withdrawOrcadManagedStopRequest(request)
             throw new Error('orcad_managed_stop_canceled')
           }
+          return request
+        },
+        (request) => {
           close()
           // Preparation is best effort: whatever it reports, the stop proceeds.
           void prepare(request)
@@ -128,17 +140,10 @@ export function installOrcadStopRequestListeners(
               console.error('[orcad] managed stop preparation failed:', error)
             )
             .finally(onRequest)
-          return false
         },
-        onRequest,
         pollIntervalMs
       )
     )
-  }
-  const close = (): void => {
-    for (const listener of listeners) {
-      listener.close()
-    }
   }
   return { close }
 }

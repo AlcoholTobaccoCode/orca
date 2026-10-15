@@ -1,8 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { vi } from 'vitest'
 import type { Mock } from 'vitest'
-import type { SshConnection, SshConnectionCallbacks } from './ssh-connection'
-import type { SshConnectionWorkLedger } from './ssh-connection-work-ledger'
+import type { SshConnectionCallbacks } from './ssh-connection'
 import type { SshResolvedConfig } from './ssh-config-parser'
 import type { SshTarget } from '../../shared/ssh-types'
 
@@ -116,18 +115,4 @@ export function createSystemSshProcess(): MockSystemSshProcess {
     proc.stdout.emit('data', Buffer.from('ORCA-SYSTEM-SSH-READY'))
   })
   return proc
-}
-
-export function createFailingSystemSshProcess(code: number): MockSystemSshProcess {
-  const proc = createPendingSystemSshProcess()
-  proc.onExit = vi.fn((handler: (exitCode: number | null) => void) => {
-    queueMicrotask(() => handler(code))
-  })
-  return proc
-}
-
-// The public reset fence lands with T3; until then the connection's own ledger fence drains the same work.
-export function fenceSshConnectionWork(conn: SshConnection) {
-  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: SshConnection owns exactly one private workLedger.
-  return (conn as unknown as { workLedger: SshConnectionWorkLedger }).workLedger.fenceForReset()
 }

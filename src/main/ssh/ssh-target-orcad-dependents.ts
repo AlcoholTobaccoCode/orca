@@ -1,15 +1,18 @@
 /**
- * Client state that still references an SSH target. Until the full migration census exists,
- * any of it keeps the host from being claimed: hiding the target would strand that state.
+ * Client state that still references an SSH target. An empty-host claim refuses any of it, since
+ * hiding the target would strand it; a migration blocks only on what its manifest can't carry.
  */
 import type { Store } from '../persistence'
 import { getDefaultWorkspaceSession } from '../../shared/constants'
 import { toSshExecutionHostId } from '../../shared/execution-host'
-import type {
-  OrcadMigrationBlocker,
-  OrcadMigrationDependency,
-  OrcadMigrationDependencyKind
+import { GLOBAL_WORKSPACE_SESSION_FIELDS } from '../../shared/workspace-session-host-field-ownership'
+import {
+  ORCAD_MIGRATION_DEPENDENCY_KINDS,
+  type OrcadMigrationBlocker,
+  type OrcadMigrationDependency,
+  type OrcadMigrationDependencyKind
 } from '../../shared/orcad-migration-preflight'
+import type { OrcadMigrationManifest } from '../../shared/orcad-migration-manifest'
 
 export type DependentStateStore = Pick<
   Store,
@@ -76,7 +79,43 @@ export function collectDependentStateBlockers(
   return blockers
 }
 
-/** Non-default fields of the host's session partition, plus a local session pointed at the host. */
+/** Kinds with their own blockers (port forwards, terminal leases) are counted elsewhere. */
+const CENSUS_DEPENDENCY_KINDS = ORCAD_MIGRATION_DEPENDENCY_KINDS.filter(
+  (kind) => kind !== 'saved-port-forward' && kind !== 'terminal-lease'
+)
+
+/**
+ * The export-aware census: only state that references the target and that this manifest cannot
+ * carry blocks. A census the store could not take is unverifiable, never an empty one.
+ */
+export function collectUntransferredDependentBlockers(
+  store: Pick<Store, 'inspectOrcadMigrationUntransferredDependencies'>,
+  manifest: OrcadMigrationManifest
+): OrcadMigrationBlocker[] {
+  let census: ReturnType<Store['inspectOrcadMigrationUntransferredDependencies']>
+  try {
+    census = store.inspectOrcadMigrationUntransferredDependencies(manifest)
+  } catch {
+    return [
+      {
+        code: 'orcad_migration_dependency_unverifiable',
+        category: 'live-or-unverifiable',
+        sources: [...CENSUS_DEPENDENCY_KINDS]
+      }
+    ]
+  }
+  const dependencies = CENSUS_DEPENDENCY_KINDS.filter((kind) => census.counts[kind] > 0).map(
+    (kind) => {
+      const names = census.names?.[kind]?.slice(0, MAX_NAMES)
+      return { kind, count: census.counts[kind], ...(names?.length ? { names } : {}) }
+    }
+  )
+  return dependencies.length > 0
+    ? [{ code: 'orcad_migration_dependent_state', category: 'client-owned-state', dependencies }]
+    : []
+}
+
+/** Non-default host-owned fields of the host's partition, plus a local session pointed at the host. */
 function workspaceSessionReferences(store: DependentStateStore, hostId: string): string[] {
   const references: string[] = []
   if (store.getWorkspaceSession().activeWorkspaceExecutionHostId === hostId) {
@@ -86,7 +125,12 @@ function workspaceSessionReferences(store: DependentStateStore, hostId: string):
     return references
   }
   const defaults: Record<string, unknown> = { ...getDefaultWorkspaceSession() }
+  // A partition's global fields are copies of client-wide focus and history, not host state.
+  const globalFields = new Set<string>(GLOBAL_WORKSPACE_SESSION_FIELDS)
   for (const [field, value] of Object.entries(store.getWorkspaceSession(hostId))) {
+    if (globalFields.has(field)) {
+      continue
+    }
     if (!isEmptyValue(value) && JSON.stringify(value) !== JSON.stringify(defaults[field])) {
       references.push(field)
     }

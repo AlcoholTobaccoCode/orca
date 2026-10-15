@@ -1,3 +1,11 @@
+import {
+  assertUniqueKeys,
+  boundedList,
+  boundedStringArray,
+  isRecord,
+  nonEmptyString
+} from './orcad-migration-manifest-fields'
+
 export const MAX_ORCAD_MIGRATION_DORMANT_ROWS = 16_384
 export const MAX_ORCAD_MIGRATION_DORMANT_NAMESPACES = 256
 
@@ -7,54 +15,25 @@ export function boundedArray<T>(
   label: string,
   maximum = MAX_ORCAD_MIGRATION_DORMANT_ROWS
 ): T[] {
-  if (!Array.isArray(value)) {
-    throw new Error(`orcad_migration_dormant_${label}_invalid`)
-  }
-  if (value.length > maximum) {
-    throw new Error(`orcad_migration_dormant_${label}_too_many`)
-  }
-  return value.map(parse)
+  return boundedList(value, maximum, parse, `orcad_migration_dormant_${label}`)
 }
 
 export function stringArray(value: unknown, maximum = MAX_ORCAD_MIGRATION_DORMANT_ROWS): string[] {
-  if (!Array.isArray(value) || value.length > maximum) {
-    throw new Error('orcad_migration_dormant_string_array_invalid')
-  }
-  const result = value.filter(isString)
-  if (
-    result.length !== value.length ||
-    result.some((entry) => !entry) ||
-    new Set(result).size !== result.length
-  ) {
-    throw new Error('orcad_migration_dormant_string_array_invalid')
-  }
-  return result
+  return boundedStringArray(value, maximum, 'orcad_migration_dormant_string_array_invalid')
 }
 
 export function assertUnique<T>(values: T[], key: (value: T) => string, label: string): void {
-  const keys = values.map(key)
-  if (new Set(keys).size !== keys.length) {
-    throw new Error(`orcad_migration_dormant_${label}_duplicate`)
-  }
+  assertUniqueKeys(values, key, `orcad_migration_dormant_${label}_duplicate`)
 }
 
 export function requiredRecord(value: unknown, error: string): Record<string, unknown> {
-  if (!isRecordValue(value)) {
+  if (!isRecord(value)) {
     throw new Error(error)
   }
   return value
 }
 
-function isRecordValue(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-export function requiredString(value: unknown, error: string): string {
-  if (typeof value !== 'string' || !value) {
-    throw new Error(error)
-  }
-  return value
-}
+export const requiredString = nonEmptyString
 
 export function requiredStringOrEmpty(value: unknown, error: string): string {
   if (typeof value !== 'string') {

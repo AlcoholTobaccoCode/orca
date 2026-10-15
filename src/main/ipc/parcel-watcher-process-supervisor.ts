@@ -2,7 +2,7 @@ import type { ChildProcess } from 'node:child_process'
 import { restartCancelledWatcherChild } from './parcel-watcher-cancellation-restart'
 import { WatcherCancellationTracker } from './parcel-watcher-cancellation-tracker'
 import { getWatcherProcessEntryPath, watcherProcessEntryExists } from './parcel-watcher-entry-path'
-import { removeWatcherCanaryDirectory } from './parcel-watcher-canary-directory'
+import { WatcherChildSlot } from './parcel-watcher-child-slot'
 import * as termination from './parcel-watcher-child-termination'
 import { launchWatcherChild } from './parcel-watcher-child-launch'
 import { sendToWatcherChild } from './parcel-watcher-child-messaging'
@@ -41,12 +41,10 @@ import { handleWatcherSupervisorMessage } from './parcel-watcher-supervisor-mess
 import { WatcherOwnedChildren } from './parcel-watcher-owned-children'
 
 export class WatcherProcessSupervisor {
-  private child: ChildProcess | null = null
   private nextSubscriptionId = 1
   private readonly crashFuse = new WatcherProcessCrashFuse()
-  private shutdownRequested = false
-  private canaryDir: string | null = null
-  private terminatingChild: ChildProcess | null = null
+  private shutdown = { requested: false, disposalRevision: 0 }
+  private readonly slot = new WatcherChildSlot()
   private readonly terminationQueue = new termination.WatcherTerminationQueue()
   private readonly records = new Map<number, WatcherProcessSubscriptionRecord>()
   private readonly pendingUnsubscribes = new Map<number, PendingWatcherUnsubscribe>()
@@ -72,14 +70,14 @@ export class WatcherProcessSupervisor {
         callback,
         opts,
         hooks,
-        shutdownRequested: this.shutdownRequested,
+        shutdownRequested: this.shutdown.requested,
         entryPath: this.options.entryPath ?? getWatcherProcessEntryPath(),
         useInProcessVitestFallback: this.options.useInProcessVitestFallback ?? true,
         allocateId: () => this.nextSubscriptionId++,
         records: this.records,
         pendingUnsubscribes: this.pendingUnsubscribes,
         ensureWatcherProcess: (entryPath) => this.ensureWatcherProcess(entryPath),
-        getChild: () => this.child,
+        getChild: () => this.slot.child,
         getTerminationPromise: () => this.terminationQueue.getCurrent(),
         killWatcherChildIfIdle: () => this.killWatcherChildIfIdle(),
         terminateUnavailableChild: (child) => this.terminateUnavailableChild(child),
@@ -93,24 +91,25 @@ export class WatcherProcessSupervisor {
   }
 
   dispose(): void {
-    this.shutdownRequested = true
+    this.shutdown.requested = true
+    this.shutdown.disposalRevision++
     this.capacityWait.dispose()
-    const proc = this.child
-    this.child = null
-    this.canaryDir = disposeWatcherSupervisor(
+    const proc = this.slot.child
+    this.slot.child = null
+    this.slot.canaryDir = disposeWatcherSupervisor(
       proc,
       this.records,
       this.pendingUnsubscribes,
       this.cancelledSubscribes,
-      this.canaryDir
+      this.slot.canaryDir
     )
   }
 
   resetForTest(): void {
     this.dispose()
     this.ownedChildren = new WatcherOwnedChildren()
-    this.shutdownRequested = false
-    this.terminatingChild = null
+    this.shutdown.requested = false
+    this.slot.terminating = null
     this.terminationQueue.resetForTest()
     this.crashFuse.reset()
     resetWatcherChildRegistryForTest()
@@ -121,11 +120,11 @@ export class WatcherProcessSupervisor {
   private ensureWatcherProcess(
     entryPath = this.options.entryPath ?? getWatcherProcessEntryPath()
   ): ChildProcess | null {
-    if (this.shutdownRequested || this.terminatingChild) {
+    if (this.shutdown.requested || this.slot.terminating) {
       return null
     }
-    if (this.child?.connected) {
-      return this.child
+    if (this.slot.child?.connected) {
+      return this.slot.child
     }
     if (this.crashFuse.isOpen()) {
       return null
@@ -135,25 +134,26 @@ export class WatcherProcessSupervisor {
     }
     const launched = launchWatcherChild(
       entryPath,
-      this.canaryDir,
+      this.slot.canaryDir,
       (child, message) => {
-        if (this.child === child) {
+        if (this.slot.child === child) {
           this.handleChildMessage(message)
         }
       },
       (child, code, signal) => this.handleChildGone(child, code, signal)
     )
     if (!launched) {
-      this.canaryDir = null
+      this.slot.canaryDir = null
       return null
     }
-    this.canaryDir = launched.canaryDir
-    this.child = this.ownedChildren.track(launched.child)
+    this.slot.canaryDir = launched.canaryDir
+    this.slot.child = this.ownedChildren.track(launched.child)
     return launched.child
   }
 
   private handleChildMessage(message: WatcherToHostMessage): void {
-    const child = this.child
+    const child = this.slot.child
+    const disposalRevision = this.shutdown.disposalRevision
     handleWatcherSupervisorMessage(message, {
       records: this.records,
       pendingUnsubscribes: this.pendingUnsubscribes,
@@ -174,6 +174,7 @@ export class WatcherProcessSupervisor {
           this.terminateUnavailableChild(child)
         }
       },
+      shouldReportTerminalError: () => this.shutdown.disposalRevision === disposalRevision,
       killWatcherChildIfIdle: () =>
         termination.ignoreWatcherTermination(this.killWatcherChildIfIdle())
     })
@@ -184,25 +185,23 @@ export class WatcherProcessSupervisor {
     code?: number | null,
     signal?: NodeJS.Signals | null
   ): void {
-    if (this.child !== proc) {
+    if (this.slot.child !== proc) {
       return
     }
     if (code === undefined) {
       this.terminateUnavailableChild(proc)
       return
     }
-    this.child = null
+    this.slot.child = null
     this.cancelledSubscribes.completeForChild(proc)
     resolvePendingWatcherUnsubscribes(this.pendingUnsubscribes)
     recoverWatcherRecordsAfterChildGone(
       this.records,
       this.crashFuse,
-      this.shutdownRequested,
+      this.shutdown.requested,
       () => this.ensureWatcherProcess(),
       sendWatcherSubscribe,
-      () => {
-        this.canaryDir = removeWatcherCanaryDirectory(this.canaryDir)
-      },
+      () => this.slot.removeCanary(),
       code,
       signal
     )
@@ -213,13 +212,12 @@ export class WatcherProcessSupervisor {
     if (currentTermination) {
       return currentTermination
     }
-    const proc = requestedChild ?? this.terminatingChild
+    const proc = requestedChild ?? this.slot.terminating
     if (!proc) {
       return Promise.resolve()
     }
-    this.child = null
-    this.terminatingChild = proc
-    this.canaryDir = removeWatcherCanaryDirectory(this.canaryDir)
+    this.slot.child = null
+    this.slot.beginTermination(proc)
     return this.terminationQueue.track(
       terminateDisconnectedWatcherChild(
         proc,
@@ -228,17 +226,15 @@ export class WatcherProcessSupervisor {
         this.cancelledSubscribes,
         this.crashFuse,
         (exited) => {
-          this.terminatingChild = null
+          this.slot.terminating = null
           if (!exited) {
-            this.shutdownRequested = true
+            this.shutdown.requested = true
           }
-          return !this.shutdownRequested
+          return !this.shutdown.requested
         },
         () => this.ensureWatcherProcess(),
         sendWatcherSubscribe,
-        () => {
-          this.canaryDir = removeWatcherCanaryDirectory(this.canaryDir)
-        }
+        () => this.slot.removeCanary()
       )
     )
   }
@@ -248,16 +244,15 @@ export class WatcherProcessSupervisor {
     if (terminationPromise) {
       return terminationPromise
     }
-    const proc = this.child
+    const proc = this.slot.child
     if (!proc || this.records.size > 0) {
       return Promise.resolve()
     }
-    this.child = null
-    this.terminatingChild = proc
-    this.canaryDir = removeWatcherCanaryDirectory(this.canaryDir)
+    this.slot.child = null
+    this.slot.beginTermination(proc)
     return this.terminationQueue.track(
       termination.terminateIdleWatcherChild(proc, this.pendingUnsubscribes, () => {
-        this.terminatingChild = null
+        this.slot.terminating = null
       })
     )
   }
@@ -270,7 +265,7 @@ export class WatcherProcessSupervisor {
       record,
       error,
       records: this.records,
-      child: this.child,
+      child: this.slot.child,
       cancelledSubscribes: this.cancelledSubscribes,
       onChildUnavailable: (child) => this.terminateUnavailableChild(child),
       restartChild: (child) => this.restartAfterCancelledSubscribe(child),
@@ -283,11 +278,10 @@ export class WatcherProcessSupervisor {
     if (activeTermination || !proc || !this.cancelledSubscribes.beginRestart(proc)) {
       return activeTermination ?? Promise.resolve()
     }
-    if (this.child === proc) {
-      this.child = null
+    if (this.slot.child === proc) {
+      this.slot.child = null
     }
-    this.terminatingChild = proc
-    this.canaryDir = removeWatcherCanaryDirectory(this.canaryDir)
+    this.slot.beginTermination(proc)
     return this.terminationQueue.track(
       restartCancelledWatcherChild(
         proc,
@@ -295,17 +289,15 @@ export class WatcherProcessSupervisor {
         this.pendingUnsubscribes,
         this.cancelledSubscribes,
         (exited) => {
-          this.terminatingChild = null
+          this.slot.terminating = null
           if (!exited) {
-            this.shutdownRequested = true
+            this.shutdown.requested = true
           }
-          return !this.shutdownRequested
+          return !this.shutdown.requested
         },
         () => this.ensureWatcherProcess(),
         sendWatcherSubscribe,
-        () => {
-          this.canaryDir = removeWatcherCanaryDirectory(this.canaryDir)
-        }
+        () => this.slot.removeCanary()
       )
     )
   }

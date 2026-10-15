@@ -8,6 +8,7 @@ import type {
   RuntimeCreateAgentSessionResult
 } from '../../shared/agent-session-host-authority'
 import { OrcaRuntimeService } from './orca-runtime'
+import type { IPtyProvider } from '../providers/pty-provider-contract'
 
 function operationId(now = Date.now()): string {
   return `${now}-0123456789abcdef0123456789abcdef`
@@ -39,10 +40,12 @@ function terminal() {
   }
 }
 
-function createRuntime(provider?: {
-  supportsAgentSessionClaims?: () => boolean
-  supportsAgentSessionCreateOperations?: () => boolean
-}) {
+function createRuntime(
+  provider?: Pick<
+    IPtyProvider,
+    'supportsAgentSessionClaims' | 'supportsAgentSessionCreateOperations'
+  >
+) {
   const runtime = new OrcaRuntimeService(
     {
       getSettings: () => ({
@@ -108,6 +111,102 @@ async function fenceRemoteAgentSessionSpawn(runtime: OrcaRuntimeService) {
   )
   return { createTerminal, failure, id }
 }
+
+describe('agent-session execution namespace', () => {
+  it('retains the original method owner, defaults and native async functions', () => {
+    const runtime = createRuntime()
+    let owner = Object.getPrototypeOf(runtime)
+    while (!Object.hasOwn(owner, 'ensureAgentSession')) {
+      owner = Object.getPrototypeOf(owner)
+    }
+    expect(owner.constructor.name).toBe('OrcaRuntimeWithGetAgentSessionExecutionNamespace')
+    expect(Object.getOwnPropertyNames(owner)).toEqual([
+      'constructor',
+      'getAgentSessionExecutionNamespace',
+      'executionOwnerSupportsAgentSessionOperation',
+      'toAgentSessionOptions',
+      'ensureAgentSession'
+    ])
+    for (const [name, length, constructor] of [
+      ['getAgentSessionExecutionNamespace', 2, 'Function'],
+      ['executionOwnerSupportsAgentSessionOperation', 3, 'AsyncFunction'],
+      ['toAgentSessionOptions', 1, 'Function'],
+      ['ensureAgentSession', 1, 'AsyncFunction']
+    ]) {
+      const descriptor = Object.getOwnPropertyDescriptor(owner, name)
+      expect(descriptor?.value.length).toBe(length)
+      expect(descriptor?.value.constructor.name).toBe(constructor)
+    }
+  })
+
+  it('calls the selected provider probe with its receiver and caller signal', async () => {
+    const signal = new AbortController().signal
+    const provider: Pick<IPtyProvider, 'supportsAgentSessionClaims'> = {
+      async supportsAgentSessionClaims(options) {
+        expect(this).toBe(provider)
+        expect(options?.signal).toBe(signal)
+        return true
+      }
+    }
+    const runtime = createRuntime(provider)
+    const createTerminal = vi.spyOn(runtime, 'createTerminal').mockResolvedValue(terminal())
+    await runtime.ensureAgentSession(
+      {
+        kind: 'explicit',
+        worktree: 'id:worktree-1',
+        agent: 'codex',
+        providerSession: { key: 'session_id', id: 'provider-session-1' }
+      },
+      { signal }
+    )
+    expect(createTerminal).toHaveBeenCalledWith(
+      'id:worktree-1',
+      expect.objectContaining({ signal })
+    )
+  })
+
+  it('propagates probe getter failure before entering the probe failure fallback', async () => {
+    const failure = new Error('probe getter failed')
+    const runtime = createRuntime({
+      get supportsAgentSessionClaims(): IPtyProvider['supportsAgentSessionClaims'] {
+        throw failure
+      }
+    })
+    const createTerminal = vi.spyOn(runtime, 'createTerminal').mockResolvedValue(terminal())
+    await expect(
+      runtime.ensureAgentSession({
+        kind: 'explicit',
+        worktree: 'id:worktree-1',
+        agent: 'codex',
+        providerSession: { key: 'session_id', id: 'provider-session-1' }
+      })
+    ).rejects.toBe(failure)
+    expect(createTerminal).not.toHaveBeenCalled()
+  })
+
+  it('captures the terminal callee before reading launch option getters', async () => {
+    const runtime = createRuntime()
+    const replacement = vi.fn(async () => terminal())
+    const original = vi.spyOn(runtime, 'createTerminal').mockResolvedValue(terminal())
+    const resume = {
+      kind: 'explicit' as const,
+      worktree: 'id:worktree-1',
+      agent: 'codex' as const,
+      providerSession: { key: 'session_id' as const, id: 'provider-session-1' },
+      get terminalKittyKeyboardProtocol() {
+        runtime.createTerminal = replacement
+        return true
+      }
+    }
+    await runtime.ensureAgentSession(resume)
+    expect(original).toHaveBeenCalledOnce()
+    expect(original.mock.calls[0]).toHaveLength(2)
+    expect(replacement).not.toHaveBeenCalled()
+    await runtime.ensureAgentSession(resume)
+    expect(replacement).toHaveBeenCalledOnce()
+    expect(replacement.mock.calls[0]).toHaveLength(2)
+  })
+})
 
 describe('agent-session create operation ledger', () => {
   it.each([true, false, undefined])(
@@ -336,6 +435,28 @@ describe('agent-session create operation ledger', () => {
     expect(createTerminal).toHaveBeenCalledTimes(2)
   })
 
+  it('starts a create however many unexpired operations are held, and still replays the first', async () => {
+    // Why: a count limit (512 per caller, 4,096 in all) refused a user's create for unrelated traffic.
+    const runtime = createRuntime()
+    const createTerminal = vi.spyOn(runtime, 'createTerminal').mockResolvedValue(terminal())
+    const now = Date.now()
+    const ids = Array.from(
+      { length: 4_097 },
+      (_, index) => `${now}-${index.toString(16).padStart(32, '0')}`
+    )
+    const dispositions = new Set<string>()
+    for (const id of ids) {
+      const created = await runtime.createAgentSession(request(id), { clientId: 'device-a' })
+      dispositions.add(created.disposition)
+    }
+
+    expect([...dispositions]).toEqual(['created'])
+    await expect(
+      runtime.createAgentSession(request(ids[0]!), { clientId: 'device-a' })
+    ).resolves.toMatchObject({ disposition: 'replayed' })
+    expect(createTerminal).toHaveBeenCalledTimes(4_097)
+  })
+
   it('rejects an expired unseen operation before terminal creation', async () => {
     const runtime = createRuntime()
     const createTerminal = vi.spyOn(runtime, 'createTerminal').mockResolvedValue(terminal())
@@ -419,7 +540,7 @@ describe('agent-session create operation ledger', () => {
       disposition: 'replayed',
       terminal: { handle: orphanHandle, ptyId: 'ssh-1:pty2:e:1', worktreeId: 'worktree-1' }
     })
-    expect(listProcesses).toHaveBeenCalledWith('ssh-1')
+    expect(listProcesses).toHaveBeenCalledWith('ssh:ssh-1')
     expect(createTerminal).toHaveBeenCalledOnce()
     expect(failure.message).toBe('execution_owner_unavailable')
   })
@@ -433,7 +554,7 @@ describe('agent-session create operation ledger', () => {
     await expect(runtime.createAgentSession(request(id), { clientId: 'device-a' })).rejects.toThrow(
       failure.message
     )
-    expect(listProcesses).toHaveBeenCalledWith('ssh-1')
+    expect(listProcesses).toHaveBeenCalledWith('ssh:ssh-1')
     expect(createTerminal).toHaveBeenCalledOnce()
   })
 

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { parsePairingCode, type PairingOffer } from './pairing'
 import { classifyRemotePairingHostname } from './remote-pairing-address'
+import { isProfileRuntimePublicKey } from './runtime-e2ee-keypair-file'
 import {
   createEnvironmentFromPairingOffer,
   getPreferredPairingOffer,
@@ -23,8 +24,11 @@ export {
   type RuntimeEnvironmentStoreErrorCode
 } from './runtime-environment-store-file'
 
-export function listEnvironments(userDataPath: string): KnownRuntimeEnvironment[] {
-  return readEnvironmentStore(userDataPath).environments
+export function listEnvironments(
+  userDataPath: string,
+  options: { requireStoreFile?: boolean } = {}
+): KnownRuntimeEnvironment[] {
+  return readEnvironmentStore(userDataPath, options).environments
 }
 
 export function addEnvironmentFromPairingCode(
@@ -37,13 +41,7 @@ export function addEnvironmentFromPairingCode(
     connectionDependency?: 'ssh-tunnel'
   }
 ): KnownRuntimeEnvironment {
-  const offer = parsePairingCode(args.pairingCode)
-  if (!offer) {
-    throw new RuntimeEnvironmentStoreError(
-      'invalid_argument',
-      'Invalid pairing code. Expected an orca://pair?... URL or bare pairing payload.'
-    )
-  }
+  const offer = parseRemotePairingCode(userDataPath, args.pairingCode)
   const store = readPersistedEnvironmentStore(userDataPath)
   const now = args.now ?? Date.now()
   const existing = store.environments.find((entry) => entry.name === args.name)
@@ -73,6 +71,24 @@ export function addEnvironmentFromPairingCode(
   return environment
 }
 
+function parseRemotePairingCode(userDataPath: string, pairingCode: string): PairingOffer {
+  const offer = parsePairingCode(pairingCode)
+  if (!offer) {
+    throw new RuntimeEnvironmentStoreError(
+      'invalid_argument',
+      'Invalid pairing code. Expected an orca://pair?... URL or bare pairing payload.'
+    )
+  }
+  // Why the key, not the address: a loopback or LAN address proves nothing either way.
+  if (isProfileRuntimePublicKey(userDataPath, offer.publicKeyB64)) {
+    throw new RuntimeEnvironmentStoreError(
+      'invalid_argument',
+      'This pairing code is for this Orca itself. Generate the code on the other computer instead.'
+    )
+  }
+  return offer
+}
+
 export function removeEnvironment(userDataPath: string, selector: string): KnownRuntimeEnvironment {
   const environment = resolveEnvironmentFromStore(readEnvironmentStore(userDataPath), selector)
   assertNoIndependentSshAccess(environment)
@@ -90,13 +106,7 @@ export function updateEnvironmentFromPairingCode(
   selector: string,
   args: { pairingCode: string; now?: number }
 ): KnownRuntimeEnvironment {
-  const offer = parsePairingCode(args.pairingCode)
-  if (!offer) {
-    throw new RuntimeEnvironmentStoreError(
-      'invalid_argument',
-      'Invalid pairing code. Expected an orca://pair?... URL or bare pairing payload.'
-    )
-  }
+  const offer = parseRemotePairingCode(userDataPath, args.pairingCode)
   assertNoIndependentSshAccess(
     resolveEnvironmentFromStore(readEnvironmentStore(userDataPath), selector)
   )
@@ -168,14 +178,30 @@ const LAST_USED_PERSIST_INTERVAL_MS = 60_000
 export function markEnvironmentUsed(
   userDataPath: string,
   selector: string,
-  args: { runtimeId?: string | null; pairedDeviceId?: string; now?: number } = {}
+  args: {
+    runtimeId?: string | null
+    /** Recorded only with `pairingDeviceToken`, and only while that token is still the saved one. */
+    pairedDeviceId?: string
+    /** The token the reply was authenticated with; identity from any other pairing is ignored. */
+    pairingDeviceToken?: string
+    now?: number
+  } = {}
 ): void {
   const store = readPersistedEnvironmentStore(userDataPath)
   const environment = resolveEnvironmentFromStore(store, selector)
   const now = args.now ?? Date.now()
-  const runtimeIdChanged = args.runtimeId != null && args.runtimeId !== environment.runtimeId
+  // Why: a reply that raced a re-pair carries the previous device's identity; recording it beside
+  // the new token makes every later identity check fail.
+  const fromSavedPairing =
+    args.pairingDeviceToken === undefined ||
+    preferredDeviceToken(environment) === args.pairingDeviceToken
+  const runtimeIdChanged =
+    fromSavedPairing && args.runtimeId != null && args.runtimeId !== environment.runtimeId
   const pairedDeviceIdChanged =
-    args.pairedDeviceId != null && args.pairedDeviceId !== environment.pairedDeviceId
+    fromSavedPairing &&
+    args.pairingDeviceToken !== undefined &&
+    args.pairedDeviceId != null &&
+    args.pairedDeviceId !== environment.pairedDeviceId
   const lastUsedIsFresh =
     environment.lastUsedAt != null &&
     now >= environment.lastUsedAt &&
@@ -196,14 +222,23 @@ export function markEnvironmentUsed(
     entry.id === environment.id
       ? {
           ...entry,
-          runtimeId: args.runtimeId ?? entry.runtimeId,
-          ...(args.pairedDeviceId ? { pairedDeviceId: args.pairedDeviceId } : {}),
+          runtimeId: (runtimeIdChanged ? args.runtimeId : null) ?? entry.runtimeId,
+          ...(pairedDeviceIdChanged && args.pairedDeviceId
+            ? { pairedDeviceId: args.pairedDeviceId }
+            : {}),
           lastUsedAt: now,
           updatedAt: now
         }
       : entry
   )
   writeEnvironmentStore(userDataPath, { version: 1, environments: next })
+}
+
+function preferredDeviceToken(environment: PersistedRuntimeEnvironment): string | undefined {
+  return (
+    environment.endpoints.find((entry) => entry.id === environment.preferredEndpointId) ??
+    environment.endpoints[0]
+  )?.deviceToken
 }
 
 export function resolveEnvironmentFromStore<T extends PersistedRuntimeEnvironment>(
@@ -231,7 +266,7 @@ function assertNoIndependentSshAccess(environment: KnownRuntimeEnvironment): voi
   if (environment.orcadDeployment) {
     throw new RuntimeEnvironmentStoreError(
       'invalid_argument',
-      'This server is managed by Orca over SSH; its pairing cannot be replaced or removed here.'
+      'This server is managed by Orca over SSH; its pairing cannot be replaced or removed here. To decommission it, run `orca environment stop --environment <name> --yes` or use Settings > Managed servers; for a host that is gone, run `orca environment forget --environment <name> --yes`.'
     )
   }
   if (environment.sshAccess || environment.pendingSshAccessOperation) {

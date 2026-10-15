@@ -1,49 +1,33 @@
 import type { SshTarget, SshConnectionState } from '../../shared/ssh-types'
-import { SshConnection, type SshConnectionCallbacks } from './ssh-connection'
+import {
+  SshConnection,
+  type SshCachedCredentials,
+  type SshConnectionCallbacks
+} from './ssh-connection'
+import { recordSshConnectionOpened, recordSshConnectionReused } from './ssh-connection-attribution'
+import { createSshCredentialDeclinedError, isSshCredentialDeclined } from './ssh-credential-decline'
 
-// ── Connection Manager ──────────────────────────────────────────────
-// Why: extracted from ssh-connection.ts to keep each file under the
-// 300-line oxlint max-lines threshold while preserving a clear
-// single-responsibility boundary (connection lifecycle vs. pool management).
-
-// Bounds an owned drain so a host that never confirms close cannot hang its caller.
-const OWNED_CONNECTION_DRAIN_TIMEOUT_MS = 10_000
+/** A remembered sign-in only applies to the endpoint it was given for; an edited host must ask. */
+function signInEndpoint(target: SshTarget): string {
+  const { configHost, host, port, username, identityFile, proxyCommand, jumpHost } = target
+  return JSON.stringify([configHost, host, port, username, identityFile, proxyCommand, jumpHost])
+}
 
 export class SshConnectionManager {
   private connections = new Map<string, SshConnection>()
+  // Why: a connection the pool replaces or closes wipes its sign-in on disconnect; without this
+  // every background redial after a drop prompts a password host again. Explicit disconnects forget.
+  private retainedSignIns = new Map<
+    string,
+    { endpoint: string; credentials: SshCachedCredentials }
+  >()
   private callbacks: SshConnectionCallbacks
   // Why: attempt identity lets disconnect unblock a replacement without the
   // cancelled attempt later clearing the replacement's state.
   private connectingTargets = new Map<string, symbol>()
-  // Local operation and teardown bookkeeping; never a verdict on remote process exit.
-  private pendingTargetOperations = new Map<string, number>()
-  private unconfirmedTargetTeardowns = new Set<string>()
-  // Counts every connection a target allocated, retired pool entries included, until it closes.
-  private readonly unclosedTransportsByTarget = new Map<string, number>()
 
   constructor(callbacks: SshConnectionCallbacks) {
     this.callbacks = callbacks
-  }
-
-  private registerConnection(targetId: string, connection: SshConnection): void {
-    this.unclosedTransportsByTarget.set(
-      targetId,
-      (this.unclosedTransportsByTarget.get(targetId) ?? 0) + 1
-    )
-    let observed = false
-    connection.subscribeTransportClosure(() => {
-      if (observed) {
-        return
-      }
-      observed = true
-      const remaining = (this.unclosedTransportsByTarget.get(targetId) ?? 1) - 1
-      if (remaining === 0) {
-        this.unclosedTransportsByTarget.delete(targetId)
-      } else {
-        this.unclosedTransportsByTarget.set(targetId, remaining)
-      }
-    })
-    this.connections.set(targetId, connection)
   }
 
   setCallbacks(callbacks: SshConnectionCallbacks): void {
@@ -54,16 +38,21 @@ export class SshConnectionManager {
   }
 
   async connect(target: SshTarget): Promise<SshConnection> {
-    return this.trackTargetOperation(target.id, () => this.connectTarget(target))
-  }
-
-  private async connectTarget(target: SshTarget): Promise<SshConnection> {
     const existing = this.connections.get(target.id)
     if (existing?.getState().status === 'connected') {
+      recordSshConnectionReused(existing)
       return existing
     }
 
-    if (this.connectingTargets.has(target.id)) {
+    // Why: background dials (managed tunnel, host status, census) would retry a cancelled sign-in
+    // every few seconds; refuse them as an auth failure, without touching the network.
+    if (isSshCredentialDeclined(target.id)) {
+      throw createSshCredentialDeclinedError(target.label)
+    }
+
+    // Why: replacing a connection whose own reconnect is asking the user would close that dialog
+    // and open another one.
+    if (this.connectingTargets.has(target.id) || existing?.isAwaitingCredential()) {
       throw new Error(`Connection to ${target.label} is already in progress`)
     }
 
@@ -72,18 +61,21 @@ export class SshConnectionManager {
 
     try {
       if (existing) {
+        this.retainSignIn(target.id, existing)
         await existing.disconnect()
       }
 
-      const conn = new SshConnection(target, this.callbacks)
-      this.registerConnection(target.id, conn)
+      const conn = new SshConnection(target, this.callbacks, this.takeRetainedSignIn(target))
+      recordSshConnectionOpened(conn)
+      this.connections.set(target.id, conn)
 
       try {
         await conn.connect()
       } catch (err) {
-        // Why: a failed startup can still hold sockets, so it is disconnected, not just forgotten.
+        // Why: a failed startup can still hold sockets, so it is disconnected, not just forgotten;
+        // quietly, so its published error is not replaced by a plain disconnect.
         try {
-          await this.disconnectConnection(target.id, conn)
+          await this.disconnectConnection(target.id, conn, { quiet: true })
         } catch (cleanupError) {
           throw new AggregateError([err, cleanupError], 'ssh_connection_startup_cleanup_failed')
         }
@@ -99,39 +91,13 @@ export class SshConnectionManager {
   }
 
   async disconnect(targetId: string): Promise<void> {
-    return this.trackTargetOperation(targetId, () => this.disconnectTarget(targetId), true)
-  }
-
-  /** Drains only the registered connection for this target; local closure is not remote exit. */
-  async disconnectAndDrain(targetId: string, signal: AbortSignal): Promise<void> {
-    return this.trackTargetOperation(
-      targetId,
-      async () => {
-        this.connectingTargets.delete(targetId)
-        const conn = this.connections.get(targetId)
-        if (!conn) {
-          return
-        }
-        await conn.disconnectAndDrain(signal)
-        if (this.connections.get(targetId) === conn) {
-          this.connections.delete(targetId)
-        }
-      },
-      true
-    )
-  }
-
-  private async disconnectTarget(targetId: string): Promise<void> {
     // Why: disconnect invalidates the old attempt immediately so a reconnect
     // need not wait for the cancelled socket's late completion.
     this.connectingTargets.delete(targetId)
+    this.retainedSignIns.delete(targetId)
     const conn = this.connections.get(targetId)
-    if (!conn) {
-      return
-    }
-    await conn.disconnect()
-    if (this.connections.get(targetId) === conn) {
-      this.connections.delete(targetId)
+    if (conn) {
+      await this.closeConnection(targetId, conn)
     }
   }
 
@@ -140,18 +106,54 @@ export class SshConnectionManager {
    * Why: a cancelled connect whose transport opened late owns that exact connection — disconnecting
    * by target id would tear down the replacement's live transport instead.
    */
-  async disconnectConnection(targetId: string, conn: SshConnection, drain = false): Promise<void> {
-    return this.trackTargetOperation(
-      targetId,
-      async () => {
-        await (drain
-          ? conn.disconnectAndDrain(AbortSignal.timeout(OWNED_CONNECTION_DRAIN_TIMEOUT_MS))
-          : conn.disconnect())
-        if (this.connections.get(targetId) === conn) {
-          this.connections.delete(targetId)
-        }
-      },
-      true
+  async disconnectConnection(
+    targetId: string,
+    conn: SshConnection,
+    options?: { quiet?: boolean }
+  ): Promise<void> {
+    this.retainSignIn(targetId, conn)
+    await this.closeConnection(targetId, conn, options)
+  }
+
+  private async closeConnection(
+    targetId: string,
+    conn: SshConnection,
+    options?: { quiet?: boolean }
+  ): Promise<void> {
+    await conn.disconnect(options)
+    if (this.connections.get(targetId) === conn) {
+      this.connections.delete(targetId)
+    }
+  }
+
+  /** Only the registered connection speaks for the target; a stale one may hold an older sign-in. */
+  private retainSignIn(targetId: string, conn: SshConnection): void {
+    if (this.connections.get(targetId) !== conn) {
+      return
+    }
+    const credentials = conn.getReusableCredentials()
+    if (credentials) {
+      this.retainedSignIns.set(targetId, {
+        endpoint: signInEndpoint(conn.getTarget()),
+        credentials
+      })
+    } else {
+      this.retainedSignIns.delete(targetId)
+    }
+  }
+
+  private takeRetainedSignIn(target: SshTarget): SshCachedCredentials | undefined {
+    const retained = this.retainedSignIns.get(target.id)
+    this.retainedSignIns.delete(target.id)
+    return retained?.endpoint === signInEndpoint(target) ? retained.credentials : undefined
+  }
+
+  /** Whether connecting this target can sign in without asking the user. */
+  hasCachedCredential(target: SshTarget): boolean {
+    const retained = this.retainedSignIns.get(target.id)
+    return (
+      this.connections.get(target.id)?.hasCachedCredential() === true ||
+      retained?.endpoint === signInEndpoint(target)
     )
   }
 
@@ -160,33 +162,7 @@ export class SshConnectionManager {
     if (!conn) {
       return
     }
-    await this.trackTargetOperation(targetId, () => conn.reconnect())
-  }
-
-  private async trackTargetOperation<T>(
-    targetId: string,
-    operation: () => Promise<T>,
-    retainFailure = false
-  ): Promise<T> {
-    this.pendingTargetOperations.set(
-      targetId,
-      (this.pendingTargetOperations.get(targetId) ?? 0) + 1
-    )
-    try {
-      return await operation()
-    } catch (error) {
-      if (retainFailure) {
-        this.unconfirmedTargetTeardowns.add(targetId)
-      }
-      throw error
-    } finally {
-      const remaining = (this.pendingTargetOperations.get(targetId) ?? 1) - 1
-      if (remaining === 0) {
-        this.pendingTargetOperations.delete(targetId)
-      } else {
-        this.pendingTargetOperations.set(targetId, remaining)
-      }
-    }
+    await conn.reconnect()
   }
 
   getConnection(targetId: string): SshConnection | undefined {
@@ -205,26 +181,18 @@ export class SshConnectionManager {
     return states
   }
 
-  async disconnectAll(shouldDisconnect: (targetId: string) => boolean = () => true): Promise<void> {
+  async disconnectAll(): Promise<void> {
+    this.retainedSignIns.clear()
     await Promise.allSettled(
       Array.from(this.connections).map(async ([targetId, connection]) => {
-        if (!shouldDisconnect(targetId)) {
-          return
+        try {
+          await connection.disconnect()
+        } finally {
+          // A later registration is not this drain's to remove.
+          if (this.connections.get(targetId) === connection) {
+            this.connections.delete(targetId)
+          }
         }
-        await this.trackTargetOperation(
-          targetId,
-          async () => {
-            try {
-              await connection.disconnect()
-            } finally {
-              // A later registration or an excluded target is not this drain's to remove.
-              if (this.connections.get(targetId) === connection) {
-                this.connections.delete(targetId)
-              }
-            }
-          },
-          true
-        )
       })
     )
   }

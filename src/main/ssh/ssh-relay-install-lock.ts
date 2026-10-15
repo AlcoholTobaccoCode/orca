@@ -1,5 +1,5 @@
-import type { SshConnection } from './ssh-connection'
-import { execCommand } from './ssh-relay-deploy-helpers'
+import type { RemoteInstallTransport } from './remote-install-transport'
+import { execHostCommand } from './ssh-relay-host-exec'
 import { RELAY_DEPLOY_TIMEOUT_MS } from './ssh-relay-deploy-timing'
 import { isUnconfirmedSshCommandTermination } from './ssh-relay-exec-command'
 import { isRelayGcClaimed, waitForRelayGcClaimRelease } from './ssh-relay-gc-claim'
@@ -7,16 +7,19 @@ import {
   acquireInstallLockParentCommand,
   lockAgeSecondsCommand,
   tryCreateInstallLockCommand,
-  tryStealInstallLockCommand
+  tryStealInstallLockCommand,
+  type InstallLockOwnerFile
 } from './ssh-relay-install-lock-commands'
+import type { InstallLockExitedOwner } from './ssh-relay-install-lock-exited-owner'
 import {
   getRemoteHostPlatform,
   joinRemotePath,
   type RemoteHostPlatform
 } from './ssh-remote-platform'
 import { removeRemoteTreeCommand } from './ssh-remote-commands'
+import { RELAY_INSTALL_LOCK_NAME } from '../../shared/relay-install-lock-name'
 
-export const RELAY_INSTALL_LOCK_NAME = '.install-lock'
+export { RELAY_INSTALL_LOCK_NAME }
 
 const INSTALL_LOCK_POLL_MS = 1_000
 // Why: a fresh lock can cross the stale threshold during our bounded wait.
@@ -42,35 +45,31 @@ export class RemoteInstallLockBusyError extends Error {
   }
 }
 
-function execHostCommand(
-  conn: SshConnection,
-  host: RemoteHostPlatform,
-  command: string,
-  options?: { signal?: AbortSignal }
-): Promise<string> {
-  return execCommand(conn, command, {
-    wrapCommand: host.commandDialect !== 'powershell',
-    signal: options?.signal
-  })
-}
-
-export async function isRelayInstallLockStale(
-  conn: SshConnection,
-  lockDir: string,
-  host: RemoteHostPlatform = DEFAULT_REMOTE_HOST
-): Promise<boolean> {
+// Why: an unconfirmed termination may have run remotely, so it never becomes a fallback.
+async function unlessUnconfirmed<T>(work: Promise<T>, fallback: T): Promise<T> {
   try {
-    // Why: remote time avoids clock skew between Orca clients making a live
-    // repair lock look old enough for GC or another installer to recover.
-    const out = await execHostCommand(conn, host, lockAgeSecondsCommand(host, lockDir))
-    const ageSec = Number.parseInt(out.trim(), 10)
-    return Number.isFinite(ageSec) && ageSec >= 0 && ageSec * 1000 > INSTALL_LOCK_STALE_MS
+    return await work
   } catch (err) {
     if (isUnconfirmedSshCommandTermination(err)) {
       throw err
     }
-    return false
+    return fallback
   }
+}
+
+export async function isRelayInstallLockStale(
+  conn: RemoteInstallTransport,
+  lockDir: string,
+  host: RemoteHostPlatform = DEFAULT_REMOTE_HOST
+): Promise<boolean> {
+  // Why: remote time avoids clock skew between Orca clients making a live
+  // repair lock look old enough for GC or another installer to recover.
+  const out = await unlessUnconfirmed(
+    execHostCommand(conn, host, lockAgeSecondsCommand(host, lockDir)),
+    ''
+  )
+  const ageSec = Number.parseInt(out.trim(), 10)
+  return Number.isFinite(ageSec) && ageSec >= 0 && ageSec * 1000 > INSTALL_LOCK_STALE_MS
 }
 
 /**
@@ -79,7 +78,7 @@ export async function isRelayInstallLockStale(
  * one winner while keeping the marker visible to older Windows Orca clients.
  */
 export async function acquireInstallLock(
-  conn: SshConnection,
+  conn: RemoteInstallTransport,
   remoteRelayDir: string,
   host: RemoteHostPlatform = DEFAULT_REMOTE_HOST,
   options?: {
@@ -90,6 +89,10 @@ export async function acquireInstallLock(
     /** False when a held lock is a fence whose age cannot prove its owner's work is finished. */
     allowStaleTakeover?: boolean
     waitTimeoutMs?: number
+    /** Written in the command that creates the lock, so a holder can prove the lock its own. */
+    owner?: InstallLockOwnerFile
+    /** Names a held lock's owner token this caller proved exited, so the steal may take it early. */
+    exitedOwner?: InstallLockExitedOwnerProof
   }
 ): Promise<void> {
   const lockDir = joinRemotePath(host, remoteRelayDir, options?.lockName ?? RELAY_INSTALL_LOCK_NAME)
@@ -102,8 +105,21 @@ export async function acquireInstallLock(
     relayGcClaim
       ? isRelayGcClaimed(conn, remoteRelayDir, host, options?.signal)
       : Promise.resolve(false)
+  // Why: GC may claim the sibling path between our probe and taking the lock.
+  // Recheck while holding the in-tree lock; one side backs off.
+  const keptAfterGcRecheck = async (): Promise<boolean> => {
+    if (!(await unlessUnconfirmed(isClaimed(), true)) && !options?.signal?.aborted) {
+      return true
+    }
+    await unlessUnconfirmed(execHostCommand(conn, host, removeRemoteTreeCommand(host, lockDir)), '')
+    options?.signal?.throwIfAborted()
+    return false
+  }
 
   const start = Date.now()
+  // Busy means a holder answered; a lock command that only ever failed reports its own error.
+  let sawHolder = false
+  let lastCommandError: unknown
   let lastStaleCheckAt = Number.NEGATIVE_INFINITY
   let lastWaitLogAt = Number.NEGATIVE_INFINITY
   while (true) {
@@ -117,73 +133,59 @@ export async function acquireInstallLock(
       signal: options?.signal
     })
     try {
-      const result = await execHostCommand(conn, host, tryCreateInstallLockCommand(host, lockDir), {
+      const createCommand = tryCreateInstallLockCommand(host, lockDir, options?.owner)
+      const result = await execHostCommand(conn, host, createCommand, {
         signal: options?.signal
       })
-      if (result.trim().endsWith('OK')) {
-        // Why: GC may claim the sibling path between our first probe and lock
-        // creation. Recheck while holding the in-tree lock; one side backs off.
-        const claimedAfterAcquire = await isClaimed().catch((err) => {
-          if (isUnconfirmedSshCommandTermination(err)) {
-            throw err
-          }
-          return true
-        })
-        if (!claimedAfterAcquire && !options?.signal?.aborted) {
-          return
-        }
-        await execHostCommand(conn, host, removeRemoteTreeCommand(host, lockDir)).catch((err) => {
-          if (isUnconfirmedSshCommandTermination(err)) {
-            throw err
-          }
-        })
-        options?.signal?.throwIfAborted()
+      if (result.trim().endsWith('OK') && (await keptAfterGcRecheck())) {
+        return
       }
+      sawHolder = true
     } catch (err) {
       if (isUnconfirmedSshCommandTermination(err)) {
         throw err
       }
       options?.signal?.throwIfAborted()
-      // A failed mkdir is lock contention; keep the connection-specific error
-      // out of the user path until the bounded wait expires.
+      // Retried until the bounded wait expires: one refused channel is not a verdict.
+      lastCommandError = err
     }
     if (
       options?.allowStaleTakeover !== false &&
       Date.now() - lastStaleCheckAt >= INSTALL_LOCK_STALE_RECHECK_MS
     ) {
       lastStaleCheckAt = Date.now()
+      const exitedOwner = await exitedOwnerFor(lockDir, options)
       // Why: recover an already-stale lock immediately, then keep checking in
       // case a fresh holder crosses the stale threshold while we are waiting.
-      const steal = await execHostCommand(
-        conn,
-        host,
-        tryStealInstallLockCommand(host, lockDir, INSTALL_LOCK_STALE_SECONDS),
-        { signal: options?.signal }
-      ).catch((err) => {
-        if (isUnconfirmedSshCommandTermination(err)) {
-          throw err
-        }
-        return 'BUSY'
-      })
+      const steal = await unlessUnconfirmed(
+        execHostCommand(
+          conn,
+          host,
+          tryStealInstallLockCommand(
+            host,
+            lockDir,
+            INSTALL_LOCK_STALE_SECONDS,
+            options?.owner,
+            exitedOwner
+          ),
+          { signal: options?.signal }
+        ),
+        'BUSY'
+      )
       options?.signal?.throwIfAborted()
       if (steal.trim().endsWith('OK')) {
-        const reason = steal.trim().endsWith('REBOOT_OK') ? 'previous-boot' : 'stale'
+        const reason = steal.trim().endsWith('REBOOT_OK')
+          ? 'previous-boot'
+          : steal.trim().endsWith('EXITED_OWNER_OK')
+            ? 'exited-owner'
+            : 'stale'
+        if (exitedOwner && reason === 'exited-owner') {
+          options?.exitedOwner?.reclaimed(exitedOwner.token)
+        }
         console.warn(`[ssh-relay] Stealing ${reason} install lock at ${lockDir}`)
-        const claimedAfterSteal = await isClaimed().catch((err) => {
-          if (isUnconfirmedSshCommandTermination(err)) {
-            throw err
-          }
-          return true
-        })
-        if (!claimedAfterSteal && !options?.signal?.aborted) {
+        if (await keptAfterGcRecheck()) {
           return
         }
-        await execHostCommand(conn, host, removeRemoteTreeCommand(host, lockDir)).catch((err) => {
-          if (isUnconfirmedSshCommandTermination(err)) {
-            throw err
-          }
-        })
-        options?.signal?.throwIfAborted()
       }
     }
     if (Date.now() - lastWaitLogAt >= INSTALL_LOCK_STALE_RECHECK_MS) {
@@ -191,10 +193,41 @@ export async function acquireInstallLock(
       console.info(`[ssh-relay] Waiting for install lock at ${lockDir}`)
     }
     if (Date.now() - start >= waitTimeoutMs) {
+      if (!sawHolder && lastCommandError !== undefined) {
+        throw lastCommandError
+      }
       throw new RemoteInstallLockBusyError(lockDir, waitTimeoutMs)
     }
     await waitForInstallLockPoll(options?.signal)
   }
+}
+
+export type InstallLockExitedOwnerProof = {
+  /** The token a provably exited holder wrote into `lockDir`, or null when none is proven. */
+  find(lockDir: string): Promise<string | null>
+  reclaimed(token: string): void
+  quietSeconds: number
+  /** Held by the steal across the takeover, so no mutation is admitted under the old owner. */
+  mutationLock?: string
+}
+
+async function exitedOwnerFor(
+  lockDir: string,
+  options: { owner?: InstallLockOwnerFile; exitedOwner?: InstallLockExitedOwnerProof } | undefined
+): Promise<InstallLockExitedOwner | undefined> {
+  const proof = options?.exitedOwner
+  if (!proof || !options?.owner) {
+    return undefined
+  }
+  const token = await proof.find(lockDir)
+  return token === null
+    ? undefined
+    : {
+        fileName: options.owner.fileName,
+        token,
+        quietSeconds: proof.quietSeconds,
+        mutationLock: proof.mutationLock
+      }
 }
 
 function waitForInstallLockPoll(signal?: AbortSignal): Promise<void> {

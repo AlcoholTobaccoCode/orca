@@ -9,7 +9,7 @@ import {
   type ShutdownIfIdleResult
 } from './types'
 import type { DaemonIdleRetirementResult } from './daemon-pty-runtime-state'
-import type { PtyBackgroundStreamEvent } from '../providers/types'
+import type { PtyBackgroundStreamEvent } from '../providers/pty-provider-contract'
 
 export abstract class DaemonPtyEventSubscriptions extends DaemonPtySessionInventory {
   onData(callback: (payload: DaemonPtyRouterDataEvent) => void): () => void {
@@ -121,6 +121,12 @@ export abstract class DaemonPtyEventSubscriptions extends DaemonPtySessionInvent
   private async finishIdleRetirementRequest(): Promise<DaemonIdleRetirementResult> {
     try {
       await this.client.ensureConnected()
+    } catch {
+      // Nothing was asked of the daemon, so nothing can be retiring.
+      this.reopenAfterRefusedIdleRetirement()
+      return { state: 'unverifiable' }
+    }
+    try {
       const result = await this.client.request<ShutdownIfIdleResult>('shutdownIfIdle', undefined)
       if (result.retiring) {
         this.idleRetirementState = 'retiring'
@@ -137,7 +143,7 @@ export abstract class DaemonPtyEventSubscriptions extends DaemonPtySessionInvent
       return {
         state: 'busy',
         liveSessions,
-        ...(!this.recoveryOnly ? { admissionReopened: true as const } : {})
+        admissionReopened: true
       }
     } catch {
       // The daemon may have accepted before contact was lost; keep admission and respawn fenced.
@@ -148,7 +154,12 @@ export abstract class DaemonPtyEventSubscriptions extends DaemonPtySessionInvent
 
   /** Reopens admission an idle-retirement attempt fenced without retiring the daemon. */
   releaseIdleRetirementFence(): void {
-    if (this.idleRetirementState !== 'retiring' && !this.idleRetirementPromise) {
+    // An unverifiable attempt may have been accepted, so it stays fenced like a retiring one.
+    if (
+      this.idleRetirementState !== 'retiring' &&
+      this.idleRetirementState !== 'unverifiable' &&
+      !this.idleRetirementPromise
+    ) {
       this.reopenAfterRefusedIdleRetirement()
     }
   }

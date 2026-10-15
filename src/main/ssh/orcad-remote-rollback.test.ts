@@ -1,10 +1,12 @@
+import type * as ExecCommandModule from './ssh-relay-exec-command'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as RecordFile from './orcad-remote-record-file'
 import type * as InstallLock from './ssh-relay-install-lock'
+import type * as TerminalBarrier from './orcad-rollback-terminal-barrier'
 
-vi.mock('./ssh-relay-deploy-helpers', () => ({
-  execCommand: vi.fn(),
-  isUnconfirmedSshCommandTermination: () => false
+vi.mock('./ssh-relay-exec-command', async (importOriginal) => ({
+  ...(await importOriginal<typeof ExecCommandModule>()),
+  execCommand: vi.fn()
 }))
 vi.mock('./ssh-connection-utils', () => ({ shellEscape: (s: string) => `'${s}'` }))
 vi.mock('./ssh-relay-install-transfers', () => ({
@@ -20,12 +22,43 @@ vi.mock('./orcad-remote-record-file', async (importOriginal) => ({
   writeAtomicOrcadRemoteRecord: vi.fn().mockResolvedValue(undefined)
 }))
 
-import { execCommand } from './ssh-relay-deploy-helpers'
+const barrier = vi.hoisted(() => {
+  const state: { log: string[] | null; state: 'retired' | 'unproven' } = {
+    log: null,
+    state: 'retired'
+  }
+  return state
+})
+// The managed stop and its terminal barrier are proven in orcad-activation-crash-recovery.test.ts.
+vi.mock('./orcad-rollback-terminal-barrier', async (importOriginal) => ({
+  ...(await importOriginal<typeof TerminalBarrier>()),
+  readOrcadRollbackBarrierTarget: async (_options: unknown, version: string) => ({
+    state: 'ready',
+    context: {
+      version,
+      runtimeId: 'r1',
+      instance: { pid: 1, startedAtMs: 1, nonce: 'n', lockPath: '/l' }
+    }
+  }),
+  stopIncumbentBehindTerminalBarrier: async (
+    _options: unknown,
+    _id: string,
+    context: { version: string }
+  ) => {
+    barrier.log?.push(`stop:${context.version}`)
+    return barrier.state === 'retired'
+      ? { state: 'retired' }
+      : { state: 'unproven', reason: 'A terminal started after the census.' }
+  }
+}))
+
+import { execCommand } from './ssh-relay-exec-command'
 import { writeAtomicOrcadRemoteRecord } from './orcad-remote-record-file'
 import { rollbackOrcad, type OrcadRollbackOptions } from './orcad-remote-rollback'
 import { emptyOrcadActivationRecord, type OrcadActivationRecord } from './orcad-activation-record'
 import { getRemoteHostPlatform } from './ssh-remote-platform'
-import type { SshConnection } from './ssh-connection'
+import { isReadinessRead } from './orcad-activation-host-test-harness'
+import { isSnapshotCaptureCommand } from './orcad-snapshot-capture-command'
 
 const mockExec = vi.mocked(execCommand)
 const ACTIVE = '0.2.0+bb01'
@@ -87,9 +120,14 @@ type HostOverrides = {
 }
 
 function scriptHost(log: string[], overrides: HostOverrides = {}): void {
+  barrier.log = log
+  barrier.state = 'retired'
   const restores = [...(overrides.restores ?? [])]
   mockExec.mockImplementation(async (_conn, command: string) => {
     const text = String(command)
+    if (text.startsWith('tail -c')) {
+      return text.includes(TARGET) ? 'orcad: listen EADDRINUSE 127.0.0.1\n' : ''
+    }
     if (text.includes('__ORCAD_RECORD_PRESENT__')) {
       return text.includes('transaction.json')
         ? '__ORCAD_RECORD_ABSENT__\n'
@@ -112,7 +150,7 @@ function scriptHost(log: string[], overrides: HostOverrides = {}): void {
       log.push('compare')
       return overrides.comparison ?? 'CHANGED'
     }
-    if (text.includes('tar -C') && text.includes('-cf')) {
+    if (isSnapshotCaptureCommand(text)) {
       log.push('rescue')
       return 'CAPTURED'
     }
@@ -124,7 +162,7 @@ function scriptHost(log: string[], overrides: HostOverrides = {}): void {
       log.push(`launch:${text.includes(ACTIVE) ? ACTIVE : TARGET}`)
       return '9999'
     }
-    if (text.startsWith('head -c ') && text.includes('.orcad-readiness')) {
+    if (isReadinessRead(text) && text.includes('.orcad-readiness')) {
       if (overrides.readinessAtMs !== undefined && Date.now() < overrides.readinessAtMs) {
         return ''
       }
@@ -139,7 +177,7 @@ function scriptHost(log: string[], overrides: HostOverrides = {}): void {
 
 function options(overrides: Partial<OrcadRollbackOptions> = {}): OrcadRollbackOptions {
   return {
-    conn: {} as SshConnection,
+    conn: Object.create(null),
     host: getRemoteHostPlatform('linux-x64'),
     remoteHome: '/home/u',
     record: record(),
@@ -242,12 +280,15 @@ describe('rollbackOrcad', () => {
     expect(result.outcome === 'failed' && result.reason).toContain('is serving again')
   })
 
-  it('keeps the newer state when a failed target may have changed it and no census is fresh', async () => {
+  it('keeps the newer state when a failed target may have changed it, until an operator accepts', async () => {
     const log: string[] = []
     scriptHost(log, { targetReady: false })
     const result = await rollbackOrcad(options())
     expect(result).toMatchObject({ outcome: 'failed', code: 'orcad_activation_no_readiness' })
-    expect(result.outcome === 'failed' && result.reason).toContain('fresh host terminal census')
+    expect(result.outcome === 'failed' && result.reason).toContain('Recover to restore')
+    expect(result.outcome === 'failed' && result.reason).toContain(
+      'Last lines of orcad.log:\norcad: listen EADDRINUSE'
+    )
     expect(log).toEqual([
       `stop:${ACTIVE}`,
       'rescue',
@@ -265,12 +306,25 @@ describe('rollbackOrcad', () => {
     ).toBe(false)
   })
 
-  it('restores the rescue and the newer build after a failed target when no terminal started', async () => {
+  it('puts the newer build back unasked when a failed target left the restored state untouched', async () => {
     const log: string[] = []
-    scriptHost(log, { targetReady: false })
-    const result = await rollbackOrcad(options({ terminalsStartedSince: async () => 0 }))
+    scriptHost(log, { targetReady: false, comparison: 'UNCHANGED' })
+    const result = await rollbackOrcad(options())
     expect(result.outcome === 'failed' && result.reason).toContain('is serving again')
     expect(log.slice(-3)).toEqual(['compare', 'restore-rescue', `launch:${ACTIVE}`])
+    const compare = mockExec.mock.calls
+      .map((call) => String(call[1]))
+      .find((command) => command.includes('verdict=UNCHANGED'))
+    expect(compare).not.toContain('rollback-rescue-')
+  })
+
+  it('keeps the newer state and restarts the newer build when work appeared after the census', async () => {
+    const log: string[] = []
+    scriptHost(log)
+    barrier.state = 'unproven'
+    const result = await rollbackOrcad(options())
+    expect(result).toMatchObject({ outcome: 'refused', code: 'orcad_rollback_terminals_at_stop' })
+    expect(log).toEqual([`stop:${ACTIVE}`, `launch:${ACTIVE}`])
   })
 
   it('records the rollback only after the target answers healthy', async () => {

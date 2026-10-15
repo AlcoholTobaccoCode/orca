@@ -7,7 +7,7 @@
 import type { ServeReadiness } from '../server/serve-readiness'
 import type { OrcadActivationExpectation } from './orcad-activation-gate'
 import { ORCAD_INSTALL_MODEL } from './remote-install-model'
-import { computeRemoteInstallDir } from './ssh-relay-versioned-install'
+import { computeRemoteInstallDir } from './remote-versioned-install'
 import { readRemoteOrcadBuildHash } from './orcad-remote-build-hash'
 import {
   launchOrcadSlotAndAwaitReadiness,
@@ -21,6 +21,7 @@ import {
   type OrcadStopOutcome
 } from './orcad-remote-process-control'
 import { execOrcadRemote, type OrcadRemoteExecTarget } from './orcad-remote-runtime-control'
+import { orcadActivationTransactionRoot } from './orcad-activation-transaction'
 import {
   initialOrcadActivationAdmissionCommand,
   parseInitialOrcadActivationAdmission
@@ -70,7 +71,9 @@ export function launchOrcadSlot(
       fullVersion: identity.version,
       userDataDir: options.userDataDir,
       bindHost: options.bindHost,
-      port: options.port
+      port: options.port,
+      // Every SSH launch is client-managed, so every one may idle out and be woken on connect.
+      activationRoot: orcadActivationTransactionRoot(options.host, options.remoteHome)
     },
     expectation(identity)
   )
@@ -138,8 +141,8 @@ export async function quiesceInterruptedOrcadSlot(
   const stopped =
     remoteDir === null ? 'already-exited' : await stopOrcadSlot(options, remoteDir, false)
   let exited = stopped === 'stopped' || stopped === 'already-exited'
-  if (stopped === 'unknown' && remoteDir !== null) {
-    // The readiness PID never matched, e.g. the slot died before readiness; liveness decides.
+  if ((stopped === 'unknown' || stopped === 'unconfirmed') && remoteDir !== null) {
+    // No verified answer, e.g. the slot died before readiness; liveness decides.
     exited = (await slotLiveness(options, remoteDir)) === 'DEAD'
   }
   if (otherSlot) {
@@ -183,7 +186,7 @@ export async function quiesceInterruptedOrcadSlot(
   return 'exited'
 }
 
-async function slotLiveness(
+export async function slotLiveness(
   options: OrcadSlotOptions,
   remoteDir: string
 ): Promise<'LIVE' | 'DEAD' | 'UNKNOWN'> {

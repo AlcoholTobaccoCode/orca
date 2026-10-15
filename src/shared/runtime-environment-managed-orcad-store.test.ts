@@ -6,17 +6,24 @@ import { encodePairingOffer } from './pairing'
 import {
   getEnvironmentStorePath,
   listEnvironments,
+  markEnvironmentUsed,
   removeEnvironment,
   updateEnvironmentFromPairingCode
 } from './runtime-environment-store'
 import {
   addManagedOrcadEnvironment,
+  recordManagedOrcadMigration,
   refreshManagedOrcadPairing,
   removeManagedOrcadEnvironment
 } from './runtime-environment-managed-orcad-store'
-import { getRuntimeEnvironmentSidecarPath } from './runtime-environment-sidecar'
+import {
+  getRuntimeEnvironmentSidecarPath,
+  readCurrentRuntimeEnvironmentSidecarEntry,
+  writeRuntimeEnvironmentSidecarEntry
+} from './runtime-environment-sidecar'
+import { readPersistedEnvironmentStore } from './runtime-environment-store-file'
 import { getRuntimeSshAccess } from './runtime-environments'
-import { shippedBuildRewrite } from './runtime-environment-shipped-store-fixture'
+import { shippedBuildRewrite } from './runtime-environment-shipped-store.test-fixture'
 
 const deployment = {
   sshTargetId: 'ssh-1',
@@ -129,5 +136,75 @@ describe('managed orcad environment store', () => {
     expect(() =>
       refreshManagedOrcadPairing(userDataPath, 'environment-1', pairingCode('ws://127.0.0.1:1'))
     ).toThrow('does not point at its SSH tunnel')
+  })
+
+  it('keeps the deployment link when a re-pair stops between its sidecar and store writes', () => {
+    add()
+    const store = readPersistedEnvironmentStore(userDataPath)
+    const existing = store.environments[0]!
+    const entry = readCurrentRuntimeEnvironmentSidecarEntry(userDataPath, existing)!
+    const { binding: _binding, ...state } = entry
+    // The first write of a refresh, then a store that landed on the new pairing revision.
+    writeRuntimeEnvironmentSidecarEntry(userDataPath, store.environments, existing, state, {
+      ...existing,
+      pairingRevision: 500
+    })
+    expect(listEnvironments(userDataPath)[0]?.orcadDeployment, 'store not yet written').toEqual(
+      deployment
+    )
+    shippedBuildRewrite(userDataPath, (environments) => {
+      environments[0]!.pairingRevision = 500
+    })
+    expect(listEnvironments(userDataPath)[0]?.orcadDeployment, 'store written').toEqual(deployment)
+  })
+
+  it('keeps the re-paired device identity when a reply from the previous pairing lands late', () => {
+    const offer = (deviceToken: string, pairedDeviceId: string) =>
+      encodePairingOffer({
+        v: 2,
+        endpoint: 'ws://127.0.0.1:46768',
+        deviceToken,
+        publicKeyB64: Buffer.alloc(32, 1).toString('base64'),
+        pairedDeviceId
+      })
+    add({ pairingCode: offer('token-old', 'device-old') })
+    const repaired = refreshManagedOrcadPairing(
+      userDataPath,
+      'environment-1',
+      offer('token-new', 'device-new'),
+      500
+    )
+    expect(repaired).toMatchObject({ pairedDeviceId: 'device-new', pairingRevision: 500 })
+
+    // A status reply authenticated with the old token finishes after the re-pair.
+    markEnvironmentUsed(userDataPath, 'environment-1', {
+      pairedDeviceId: 'device-old',
+      pairingDeviceToken: 'token-old',
+      now: 600
+    })
+    const after = listEnvironments(userDataPath)[0]
+    expect(after?.pairedDeviceId).toBe('device-new')
+    expect(after?.endpoints[0]?.deviceToken).toBe('token-new')
+    expect(after?.orcadDeployment).toEqual(deployment)
+  })
+
+  it('keeps the latest migration mark and never moves it back, across a downgrade rewrite and a re-pair', () => {
+    add()
+    recordManagedOrcadMigration(userDataPath, 'environment-1', '2026-02-01T00:00:00.000Z')
+    recordManagedOrcadMigration(userDataPath, 'environment-1', '2026-03-01T00:00:00.000Z')
+    recordManagedOrcadMigration(userDataPath, 'environment-1', '2026-02-15T00:00:00.000Z')
+    shippedBuildRewrite(userDataPath, (environments) => {
+      environments[0]!.lastUsedAt = 900
+    })
+    expect(listEnvironments(userDataPath)[0]?.orcadMigratedAt).toBe('2026-03-01T00:00:00.000Z')
+    const rotated = encodePairingOffer({
+      v: 2,
+      endpoint: 'ws://127.0.0.1:46768',
+      deviceToken: 'rotated-token',
+      publicKeyB64: Buffer.alloc(32, 1).toString('base64')
+    })
+    expect(
+      refreshManagedOrcadPairing(userDataPath, 'environment-1', rotated, 500).orcadMigratedAt
+    ).toBe('2026-03-01T00:00:00.000Z')
   })
 })

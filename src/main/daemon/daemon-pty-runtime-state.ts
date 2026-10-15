@@ -28,7 +28,7 @@ import {
   type HistoryRecoveryFreeze
 } from './history-manager'
 import { HistoryReader } from './history-reader'
-import type { PtyBackgroundStreamEvent } from '../providers/types'
+import type { PtyBackgroundStreamEvent } from '../providers/pty-provider-contract'
 import type { DaemonPtyRouterDataEvent, DaemonPtyRouterExitEvent } from './daemon-pty-router-events'
 
 export type PendingDaemonSpawnOperation = {
@@ -57,7 +57,6 @@ export type DaemonPtyAdapterOptions = {
   historyPath?: string
   runtimeDir?: string
   packagedAppVersion?: string | null
-  recoveryOnly?: boolean
   respawn?: (reason: DaemonRespawnReason) => Promise<void | (() => void)>
 }
 
@@ -80,7 +79,6 @@ export type DaemonIdleRetirementResult =
 
 export abstract class DaemonPtyRuntimeState {
   readonly protocolVersion: number
-  readonly recoveryOnly: boolean
   protected socketPath: string
   protected tokenPath: string
   protected pidPath: string | null
@@ -201,7 +199,6 @@ export abstract class DaemonPtyRuntimeState {
 
   constructor(opts: DaemonPtyAdapterOptions) {
     this.protocolVersion = opts.protocolVersion ?? PROTOCOL_VERSION
-    this.recoveryOnly = opts.recoveryOnly === true
     this.socketPath = opts.socketPath
     this.tokenPath = opts.tokenPath
     this.pidPath = opts.pidPath ?? null
@@ -221,7 +218,7 @@ export abstract class DaemonPtyRuntimeState {
     })
     this.historyManager = opts.historyPath ? new HistoryManager(opts.historyPath) : null
     this.historyReader = opts.historyPath ? new HistoryReader(opts.historyPath) : null
-    this.respawnFn = this.recoveryOnly ? null : (opts.respawn ?? null)
+    this.respawnFn = opts.respawn ?? null
     this.runtimeDir = opts.runtimeDir ?? opts.profileScope ?? null
     this.packagedAppVersion = opts.packagedAppVersion ?? null
     this.supportsCheckpoints = this.protocolVersion >= 4
@@ -250,9 +247,7 @@ export abstract class DaemonPtyRuntimeState {
   }
 
   // Why the id is read rather than ignored: the contract promises a fact about THIS pty, and
-  // getProviderForPty falls back to the local provider for any id it cannot place. A
-  // remote-runtime id therefore reaches this adapter, and answering from the protocol flag
-  // alone returned `true` for a session this daemon has never owned.
+  // answering from the protocol flag alone returned `true` for a session this daemon never owned.
   canProvideAuthoritativeBufferSnapshot(id: string): boolean {
     return this.supportsAuthoritativeBufferSnapshots && this.activeSessionIds.has(id)
   }

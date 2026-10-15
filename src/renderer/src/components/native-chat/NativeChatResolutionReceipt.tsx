@@ -9,11 +9,15 @@ import {
 
 export function NativeChatResolutionReceipt({
   body,
-  disclosureId
+  disclosureId,
+  awaiting = true
 }: {
   body: NativeChatResolvedPrompt
   /** Message this receipt stands in for; keys the question row's disclosure. */
   disclosureId?: string
+  /** False when the host says nobody waits on this pending prompt: the agent that raised it ended,
+   *  so its row reports what was asked instead of breathing. */
+  awaiting?: boolean
 }): React.JSX.Element | null {
   const askDisclosureKey = disclosureId === undefined ? undefined : `ask:${disclosureId}`
   const subject: NativeChatAskRowSubject | null =
@@ -35,7 +39,11 @@ export function NativeChatResolutionReceipt({
           }
   if (body.resolution.state === 'pending') {
     return body.kind === 'question' ? (
-      <NativeChatAwaitingInputRow subject={subject} pending disclosureKey={askDisclosureKey} />
+      <NativeChatAwaitingInputRow
+        subject={subject}
+        pending={awaiting}
+        disclosureKey={askDisclosureKey}
+      />
     ) : null
   }
   const { resolution } = body
@@ -44,7 +52,7 @@ export function NativeChatResolutionReceipt({
   const answers = nativeChatReceiptAnswers(body)
   return (
     <div
-      className="space-y-1 border-l border-border pl-3 text-xs text-muted-foreground"
+      className="space-y-1 border-l border-border pl-3 text-xs text-chat-foreground-faint"
       data-native-chat-receipt={body.kind}
     >
       {body.kind === 'question' ? (
@@ -72,11 +80,13 @@ export function NativeChatResolutionReceipt({
             <p>{answer.question}</p>
           ) : null}
           <p className="line-clamp-3 whitespace-pre-wrap break-words">
-            {answer.answer ??
-              translate(
-                'components.native-chat.receipt.unavailable',
-                'Selected answer unavailable'
-              )}
+            {answer.answer === ''
+              ? translate('components.native-chat.receipt.emptyAnswer', 'Empty answer')
+              : (answer.answer ??
+                translate(
+                  'components.native-chat.receipt.unavailable',
+                  'Selected answer unavailable'
+                ))}
           </p>
         </div>
       ))}

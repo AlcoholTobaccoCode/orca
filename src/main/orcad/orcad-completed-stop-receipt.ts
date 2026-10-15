@@ -4,11 +4,13 @@ import { dirname, join } from 'node:path'
 import type { z } from 'zod'
 import { readNodeFileSyncWithinLimit } from '../../shared/node-bounded-file-reader'
 import { writeDurableSecureJsonFile } from '../../shared/secure-file'
+import { hasErrorCode } from '../daemon/daemon-process-inspection'
 import {
   ORCAD_STOP_RECEIPTS_DIRNAME,
   OrcadCompletedStopReceiptSchema,
   OrcadManagedStopRequestSchema,
   OrcadDaemonRetirementRecordSchema,
+  orcadManagedStopRequestKey,
   type OrcadCompletedStopReceipt,
   type OrcadDaemonRetirementRecord,
   type OrcadManagedStopRequest
@@ -40,7 +42,7 @@ export function readOrcadStopReceipt<T extends { request: OrcadManagedStopReques
       throw new Error('orcad_stop_receipt_unverifiable')
     }
   } catch (error) {
-    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') {
+    if (hasErrorCode(error, 'ENOENT')) {
       return null
     }
     throw error
@@ -48,8 +50,7 @@ export function readOrcadStopReceipt<T extends { request: OrcadManagedStopReques
   const receipt = schema.parse(
     JSON.parse(readNodeFileSyncWithinLimit(path, RECEIPT_MAX_BYTES).buffer.toString('utf8'))
   )
-  const expected = OrcadManagedStopRequestSchema.parse(request)
-  if (JSON.stringify(receipt.request) !== JSON.stringify(expected)) {
+  if (orcadManagedStopRequestKey(receipt.request) !== orcadManagedStopRequestKey(request)) {
     throw new Error('orcad_stop_receipt_mismatch')
   }
   return receipt

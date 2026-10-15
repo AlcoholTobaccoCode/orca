@@ -4,23 +4,46 @@ import { join } from 'node:path'
 import { runInNewContext } from 'node:vm'
 import { describe, expect, it } from 'vitest'
 import { parse } from 'yaml'
-import { runProcessSync } from './script-child-process.mjs'
+import { runProcessSync } from '@orca/process-host'
 
 const workflow = parse(readFileSync('.github/workflows/node-server-tests.yml', 'utf8'))
 const steps = workflow.jobs.persistence.steps
-const identity = steps.find((step) => step.id === 'orcad-prebuild-cache-identity')
-const restore = steps.find((step) => step.id === 'orcad-prebuild-cache-restore')
-const build = steps.find((step) => step.name?.startsWith('Build and smoke this runner'))
+const prepare = steps.find((step) => step.id === 'orcad-prebuild')
+const action = parse(readFileSync('.github/actions/prepare-orcad-prebuilds/action.yml', 'utf8'))
+const actionSteps = action.runs.steps
+const identity = actionSteps.find((step) => step.id === 'orcad-prebuild-cache-identity')
+const restore = actionSteps.find((step) => step.id === 'orcad-prebuild-cache-restore')
+const build = actionSteps.find((step) => step.name?.startsWith('Build and smoke this runner'))
 const save = steps.find((step) => step.uses === 'actions/cache/save@v5')
 
 function evaluate(expression, context) {
   return runInNewContext(
-    expression.replaceAll(
-      'steps.orcad-prebuild-cache-identity',
-      'steps["orcad-prebuild-cache-identity"]'
-    ),
+    expression
+      .replaceAll('steps.orcad-prebuild-cache-identity', 'steps["orcad-prebuild-cache-identity"]')
+      .replaceAll('steps.orcad-prebuild', 'steps["orcad-prebuild"]')
+      .replace(
+        /\.(resolve-windows-cache|restore-windows-cache|cache-identity-outcome|cache-key)\b/g,
+        (_match, name) => `["${name}"]`
+      ),
     context
   )
+}
+
+function actionContext(ctx, caller = prepare) {
+  return {
+    ...ctx,
+    inputs: Object.fromEntries(
+      Object.entries(caller.with).map(([key, value]) => [
+        key,
+        value.startsWith('${{') ? String(evaluate(value.slice(3, -2).trim(), ctx)) : value
+      ])
+    )
+  }
+}
+
+function setIdentity(ctx, outcome, key = 'exact-key') {
+  ctx.steps['orcad-prebuild-cache-identity'] = { outcome, outputs: { key } }
+  ctx.steps['orcad-prebuild'].outputs = { 'cache-identity-outcome': outcome, 'cache-key': key }
 }
 
 function context(os, arch, event, ref, template = false) {
@@ -29,10 +52,15 @@ function context(os, arch, event, ref, template = false) {
     github: { event_name: event, ref },
     inputs: { build_template: template, ref: '' },
     steps: {
-      'orcad-prebuild-cache-identity': { outcome: 'success', outputs: { key: 'exact-key' } }
+      'orcad-prebuild-cache-identity': { outcome: 'success', outputs: { key: 'exact-key' } },
+      'orcad-prebuild': {
+        outputs: { 'cache-identity-outcome': 'success', 'cache-key': 'exact-key' }
+      }
     },
     success: () => true,
     fromJSON: JSON.parse,
+    format: (template, ...values) =>
+      template.replace(/\{(\d+)\}/g, (_match, index) => String(values[Number(index)])),
     contains: (values, value) => values.includes(value)
   }
 }
@@ -40,7 +68,7 @@ function context(os, arch, event, ref, template = false) {
 describe('Windows server prebuild cache workflow', () => {
   it.each([
     ['pull_request', 'refs/pull/1/merge', false, true, false],
-    ['push', 'refs/heads/main', false, false, true],
+    ['push', 'refs/heads/main', false, true, true],
     ['schedule', 'refs/heads/main', false, false, true],
     ['workflow_dispatch', 'refs/heads/main', false, false, true],
     ['workflow_call', 'refs/heads/main', false, false, false],
@@ -58,10 +86,10 @@ describe('Windows server prebuild cache workflow', () => {
     ]) {
       const ctx = context(os, arch, event, ref, template)
       const windows = os === 'Windows' && ['X64', 'ARM64'].includes(arch)
-      const resolves = evaluate(identity.if, ctx)
+      const resolves = evaluate(identity.if, actionContext(ctx))
       expect(resolves).toBe(windows && (reads || writes))
-      ctx.steps['orcad-prebuild-cache-identity'].outcome = resolves ? 'success' : 'skipped'
-      expect(evaluate(restore.if, ctx)).toBe(windows && reads)
+      setIdentity(ctx, resolves ? 'success' : 'skipped')
+      expect(evaluate(restore.if, actionContext(ctx))).toBe(windows && reads)
       expect(evaluate(save.if, ctx)).toBe(windows && writes)
       ctx.success = () => false
       expect(evaluate(save.if, ctx)).toBe(false)
@@ -72,15 +100,15 @@ describe('Windows server prebuild cache workflow', () => {
     for (const event of ['pull_request', 'push']) {
       const ctx = context('Windows', 'X64', event, 'refs/heads/main')
       for (const outcome of ['failure', 'skipped']) {
-        ctx.steps['orcad-prebuild-cache-identity'].outcome = outcome
-        expect(evaluate(restore.if, ctx)).toBe(false)
+        setIdentity(ctx, outcome)
+        expect(evaluate(restore.if, actionContext(ctx))).toBe(false)
         expect(evaluate(save.if, ctx)).toBe(false)
       }
-      ctx.steps['orcad-prebuild-cache-identity'] = { outcome: 'success', outputs: { key: '' } }
-      expect(evaluate(restore.if, ctx)).toBe(false)
+      setIdentity(ctx, 'success', '')
+      expect(evaluate(restore.if, actionContext(ctx))).toBe(false)
       expect(evaluate(save.if, ctx)).toBe(false)
       ctx.inputs.ref = 'refs/tags/v1'
-      expect(evaluate(identity.if, ctx)).toBe(false)
+      expect(evaluate(identity.if, actionContext(ctx))).toBe(false)
       expect(evaluate(save.if, ctx)).toBe(false)
     }
   })
@@ -95,10 +123,10 @@ describe('Windows server prebuild cache workflow', () => {
       ]) {
         const ctx = context('Windows', 'X64', event, 'refs/heads/main')
         ctx.inputs = inputs
-        expect(evaluate(identity.if, ctx)).toBe(false)
+        expect(evaluate(identity.if, actionContext(ctx))).toBe(false)
         expect(evaluate(save.if, ctx)).toBe(false)
-        ctx.steps['orcad-prebuild-cache-identity'].outcome = 'skipped'
-        expect(evaluate(restore.if, ctx)).toBe(false)
+        setIdentity(ctx, 'skipped')
+        expect(evaluate(restore.if, actionContext(ctx))).toBe(false)
       }
     }
   )
@@ -109,11 +137,17 @@ describe('Windows server prebuild cache workflow', () => {
     expect(restore.uses).toBe('actions/cache/restore@v5')
     expect(restore['continue-on-error']).toBe(true)
     expect(restore.with['restore-keys']).toBeUndefined()
-    expect(restore.with).toEqual(save.with)
+    expect(action.outputs['cache-path'].value).toBe(restore.with.path)
+    expect(action.outputs['cache-key'].value).toBe(restore.with.key)
+    expect(save.with.path).toBe('${{ steps.orcad-prebuild.outputs.cache-path }}')
+    expect(save.with.key).toBe('${{ steps.orcad-prebuild.outputs.cache-key }}')
+    expect(prepare.uses).toBe('./.github/actions/prepare-orcad-prebuilds')
     expect(restore.with.key).toBe('${{ steps.orcad-prebuild-cache-identity.outputs.key }}')
     expect(restore.with.path).toBe('${{ steps.orcad-prebuild-cache-identity.outputs.path }}')
-    expect(steps.indexOf(restore)).toBeLessThan(steps.indexOf(build))
+    expect(actionSteps.indexOf(restore)).toBeLessThan(actionSteps.indexOf(build))
     expect(save['continue-on-error']).toBe(true)
+    expect(steps.indexOf(save)).toBeGreaterThan(steps.indexOf(prepare))
+    expect(actionSteps.some((step) => step.uses === 'actions/cache/save@v5')).toBe(false)
     expect(build.if).toBeUndefined()
     expect(build['continue-on-error']).toBeUndefined()
     for (const gate of steps.filter((step) =>
@@ -137,6 +171,167 @@ describe('Windows server prebuild cache workflow', () => {
   })
 })
 
+describe('SSH Windows consumers of qualified server slots', () => {
+  const sshWorkflow = parse(readFileSync('.github/workflows/ssh-windows-hosts.yml', 'utf8'))
+  const sshSteps = sshWorkflow.jobs.hosts.steps
+  const sshPrepare = sshSteps.find((step) => step.uses === prepare.uses)
+  const inboxBackground = sshSteps.find((step) => step.id === 'inbox-capability')
+  const inboxSerial = sshSteps.find((step) => step.name?.endsWith('after the builds'))
+  const allLanes = [
+    { arch: 'x64', runner: 'windows-2022', server: 'inbox' },
+    { arch: 'x64', runner: 'windows-2022', server: 'preview', archive: 'OpenSSH-Win64.zip' },
+    { arch: 'arm64', runner: 'windows-11-arm', server: 'inbox' },
+    { arch: 'arm64', runner: 'windows-11-arm', server: 'preview', archive: 'OpenSSH-ARM64.zip' }
+  ]
+
+  function sshContext(event, inputs = {}) {
+    const ctx = context('Windows', 'ARM64', event, 'refs/heads/main')
+    ctx.github.event = { inputs, pull_request: { number: undefined } }
+    ctx.inputs = inputs
+    ctx.env = {
+      INBOX_PREPARATION_MODE: sshValue(sshWorkflow.jobs.hosts.env.INBOX_PREPARATION_MODE, ctx)
+    }
+    return ctx
+  }
+
+  function sshValue(value, ctx) {
+    return evaluate(value.slice(3, -2).trim(), ctx)
+  }
+
+  function backgroundPreparationRuns(ctx) {
+    const condition = inboxBackground.run
+      .match(/^\s*if\((.*)\)\{\s*$/m)[1]
+      .replace(/'\$\{\{ matrix\.(arch|server) \}\}'/g, (_match, name) => `matrix.${name}`)
+      .replaceAll('$env:INBOX_PREPARATION_MODE', 'env.INBOX_PREPARATION_MODE')
+      .replaceAll(' -eq ', ' === ')
+      .replaceAll(' -and ', ' && ')
+    return evaluate(condition, ctx)
+  }
+
+  it.each(['pull_request', 'workflow_dispatch'])(
+    'restores only PR slots and keeps manual %s qualification fresh',
+    (event) => {
+      for (const arch of ['X64', 'ARM64']) {
+        const ctx = context('Windows', arch, event, 'refs/heads/main')
+        expect(evaluate(identity.if, actionContext(ctx, sshPrepare))).toBe(event === 'pull_request')
+        expect(evaluate(restore.if, actionContext(ctx, sshPrepare))).toBe(event === 'pull_request')
+      }
+      expect(sshSteps.some((step) => step.uses === 'actions/cache/save@v5')).toBe(false)
+    }
+  )
+
+  it('keeps both architectures, both sshd versions and the existing build order', () => {
+    expect(
+      sshValue(sshWorkflow.jobs.hosts.strategy.matrix.include, sshContext('pull_request'))
+    ).toEqual(allLanes)
+    const addon = sshSteps.findIndex((step) =>
+      step.run?.includes('build-windows-process-tree-addon.mjs')
+    )
+    const template = sshSteps.findIndex((step) => step.run?.includes('build-orcad-template.mjs'))
+    const hosts = sshSteps.findIndex((step) => step.name?.startsWith('Run the Windows host cells'))
+    expect(addon).toBeLessThan(sshSteps.indexOf(sshPrepare))
+    expect(sshSteps.indexOf(sshPrepare)).toBeLessThan(template)
+    expect(template).toBeLessThan(hosts)
+    expect(sshSteps[template].run).toContain('--require-slots "win32-${{ matrix.arch }}"')
+    expect(sshSteps[hosts].run).toContain("@('orcad-cmd','orcad-powershell')")
+    for (const workflowPaths of [
+      workflow.on.pull_request.paths,
+      sshWorkflow.on.pull_request.paths
+    ]) {
+      expect(workflowPaths).toContain('.github/actions/prepare-orcad-prebuilds/**')
+    }
+    expect(sshWorkflow.on.pull_request.paths).toContain(
+      'config/scripts/orcad-windows-prebuild-cache.mjs'
+    )
+  })
+
+  it.each([
+    ['pull_request', {}, 'overlap', false],
+    ['pull_request', { preparation_mode: 'serial', arm_inbox_only: true }, 'overlap', false],
+    ['push', { preparation_mode: 'serial', arm_inbox_only: true }, 'overlap', false],
+    ['workflow_dispatch', {}, 'overlap', false],
+    ['workflow_dispatch', { preparation_mode: 'overlap', arm_inbox_only: false }, 'overlap', false],
+    ['workflow_dispatch', { preparation_mode: 'serial', arm_inbox_only: false }, 'serial', false],
+    ['workflow_dispatch', { preparation_mode: 'overlap', arm_inbox_only: true }, 'overlap', true],
+    ['workflow_dispatch', { preparation_mode: 'serial', arm_inbox_only: true }, 'serial', true]
+  ])('%s inputs=%j mode=%s ARM-only=%s', (event, inputs, mode, armOnly) => {
+    const ctx = sshContext(event, inputs)
+    const lanes = sshValue(sshWorkflow.jobs.hosts.strategy.matrix.include, ctx)
+    expect(lanes).toEqual(armOnly ? [allLanes[2]] : allLanes)
+    expect(ctx.env.INBOX_PREPARATION_MODE).toBe(mode)
+    for (const matrix of lanes) {
+      ctx.matrix = matrix
+      const inboxArm = matrix.server === 'inbox' && matrix.arch === 'arm64'
+      expect(backgroundPreparationRuns(ctx)).toBe(inboxArm && mode === 'overlap')
+      expect(sshValue(inboxSerial.if, ctx)).toBe(inboxArm && mode === 'serial')
+    }
+  })
+
+  it('defaults to the existing overlap schedule and keeps serial after the successful wait', () => {
+    expect(sshWorkflow.on.workflow_dispatch.inputs.preparation_mode).toMatchObject({
+      type: 'choice',
+      default: 'overlap',
+      options: ['overlap', 'serial']
+    })
+    expect(sshWorkflow.on.workflow_dispatch.inputs.arm_inbox_only).toMatchObject({
+      type: 'boolean',
+      default: false
+    })
+    const dependencies = sshSteps.findIndex((step) => step.id === 'dependencies')
+    const template = sshSteps.findIndex((step) => step.run?.includes('build-orcad-template.mjs'))
+    const wait = sshSteps.findIndex((step) => step.wait === 'inbox-capability')
+    const serial = sshSteps.indexOf(inboxSerial)
+    const hosts = sshSteps.findIndex((step) => step.name?.startsWith('Run the Windows host cells'))
+    expect(inboxBackground.background).toBe(true)
+    expect(inboxBackground.if).toBeUndefined()
+    expect(sshSteps.indexOf(inboxBackground)).toBeLessThan(dependencies)
+    expect(template).toBeLessThan(wait)
+    expect(serial).toBe(wait + 1)
+    expect(hosts).toBe(serial + 1)
+    expect(inboxSerial.background).toBeUndefined()
+    for (const preparation of [inboxBackground, inboxSerial]) {
+      expect(preparation['continue-on-error']).toBeUndefined()
+      expect(preparation.run).toContain(
+        '. config/ci/windows-ssh-provider/preview-ssh/windows-ssh-capability.ps1'
+      )
+      expect(preparation.run).toContain(
+        "-Receipt (Join-Path $receipts 'inbox-capability-preparation.json') -PreparationMode $env:INBOX_PREPARATION_MODE"
+      )
+    }
+    expect(sshSteps[hosts].run).toContain('-InboxPreparationReceipt $preparation')
+    expect(sshWorkflow.jobs.hosts.env.ORCA_BACKGROUND_LAUNCH).toBe('1')
+    expect(sshWorkflow.jobs.hosts.env.ORCA_ISOLATED_SSH_CI).toBe('1')
+    for (const event of ['pull_request', 'workflow_dispatch']) {
+      for (const preparation_mode of ['overlap', 'serial']) {
+        for (const [cells, jobMinutes, hostMinutes] of [
+          ['', 75, 50],
+          ['orcad-cli-managed', 160, 130]
+        ]) {
+          const ctx = sshContext(event, { preparation_mode, arm_inbox_only: true, cells })
+          expect(sshValue(sshWorkflow.jobs.hosts['timeout-minutes'], ctx)).toBe(jobMinutes)
+          expect(sshValue(sshSteps[hosts]['timeout-minutes'], ctx)).toBe(hostMinutes)
+        }
+      }
+    }
+  })
+
+  it('isolates manual comparison modes while preserving ordinary cancellation groups', () => {
+    const group = (ctx) =>
+      sshWorkflow.concurrency.group.replace(/\$\{\{(.*?)\}\}/g, (_match, expression) =>
+        String(evaluate(expression.trim(), ctx))
+      )
+    const regular = sshContext('pull_request')
+    regular.github.event.pull_request = { number: 28669 }
+    expect(group(regular)).toBe('ssh-windows-hosts-28669')
+    expect(group(sshContext('workflow_dispatch'))).toBe('ssh-windows-hosts-refs/heads/main')
+    for (const mode of ['overlap', 'serial']) {
+      expect(
+        group(sshContext('workflow_dispatch', { arm_inbox_only: true, preparation_mode: mode }))
+      ).toBe(`ssh-windows-hosts-refs/heads/main-${mode}`)
+    }
+  })
+})
+
 const commandMocks = `
 node() {
   echo "node $*" >> "$COMMAND_LOG"
@@ -145,6 +340,7 @@ node() {
       IFS= read -r verdict < out/orcad-prebuilds/manifest.json
       [ "$verdict" = valid ] ;;
     *--print-slot) echo win32-x64 ;;
+    *--require-slots*|*--smoke) grep -qx valid out/orcad-prebuilds/manifest.json ;;
     *) return 41 ;;
   esac
 }
@@ -208,8 +404,8 @@ describe.skipIf(process.platform === 'win32')('Windows prebuild Bash fallback', 
     ).toBe(validates)
     expect(commands.slice(-3)).toEqual([
       'node config/scripts/build-orcad-prebuilds.mjs --print-slot',
-      'pnpm build:orcad-prebuilds --require-slots win32-x64',
-      'pnpm build:orcad-prebuilds --smoke'
+      'node config/scripts/build-orcad-prebuilds.mjs --require-slots win32-x64',
+      'node config/scripts/build-orcad-prebuilds.mjs --smoke'
     ])
   })
 

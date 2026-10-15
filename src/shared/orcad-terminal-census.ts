@@ -13,7 +13,12 @@ export const OrcadTerminalCensusSchema = z.object({
   /** Of those, how many started at or after the active version's activation. */
   startedSinceActivation: CountSchema,
   /** Protocol of the daemon that owns those sessions. */
-  daemonProtocolVersion: z.number().int().positive().nullable()
+  daemonProtocolVersion: z.number().int().positive().nullable(),
+  /**
+   * Of `liveSessions`, how many run inside orcad itself (a degraded daemon's fallback). Unlike
+   * daemon sessions these end with any orcad restart. Absent from hosts that predate it.
+   */
+  inProcessSessions: CountSchema.optional()
 })
 
 export type OrcadTerminalCensus = z.infer<typeof OrcadTerminalCensusSchema>
@@ -23,5 +28,10 @@ export const ORCAD_TERMINAL_CENSUS_METHOD = 'orcad.terminalCensus'
 
 export const OrcadTerminalCensusParamsSchema = z.object({
   /** The active version's activation time, epoch ms; sessions created at or after it count. */
-  activatedAt: z.number().finite().nonnegative()
+  activatedAt: z.number().finite().nonnegative(),
+  /**
+   * An update or rollback is about to restart the server: first close completed automation run
+   * terminals no client used. Optional; an older server ignores it and counts them as before.
+   */
+  releaseFinishedAutomationTerminals: z.literal(true).optional()
 })

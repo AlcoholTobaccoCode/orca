@@ -14,6 +14,7 @@ import type { DaemonStreamDataBatcher } from './daemon-stream-data-batcher'
 import type { TerminalHistorySeedTransferRegistry } from './terminal-history-seed-transfer-registry'
 import type { CreateOrAttachOptions, CreateOrAttachResult, TerminalHost } from './terminal-host'
 import { isTuiAgent } from '../../shared/tui-agent-config'
+import { isSpawnIntent } from '../../shared/host-spawn-admission'
 import { parsePtyStartupIngressIntent } from '../../shared/pty-startup-ingress'
 import {
   isAgentSessionExecutionClaim,
@@ -22,6 +23,18 @@ import {
 import { type DaemonRequest, TerminalAttachCanceledError } from './types'
 
 type CreateOrAttachRequest = Extract<DaemonRequest, { type: 'createOrAttach' }>
+
+const MAX_SPAWN_ADMISSION_WINDOW_MS = 12_000
+
+// Why half, capped: a paced fork must finish before the caller's own cancellation fires,
+// and remote clients give up on a terminal create after 15 s.
+function resolveSpawnAdmissionDeadline(cancelAfterMs: unknown): number {
+  const windowMs =
+    Number.isSafeInteger(cancelAfterMs) && Number(cancelAfterMs) > 0
+      ? Math.min(Number(cancelAfterMs) / 2, MAX_SPAWN_ADMISSION_WINDOW_MS)
+      : MAX_SPAWN_ADMISSION_WINDOW_MS
+  return Date.now() + windowMs
+}
 
 type DaemonTerminalAdmissionOptions = {
   host: TerminalHost
@@ -115,6 +128,11 @@ export class DaemonTerminalAdmission {
           ? { shellReadyTimeoutMs: payload.shellReadyTimeoutMs }
           : {}),
         ...(payload.agentSessionEnsure ? { agentSessionEnsure: payload.agentSessionEnsure } : {}),
+        spawnAdmission: {
+          clientId,
+          declaredIntent: isSpawnIntent(payload.spawnIntent) ? payload.spawnIntent : null,
+          deadlineAt: resolveSpawnAdmissionDeadline(payload.cancelAfterMs)
+        },
         isCanceled: () => spawnPreparation?.canceled === true,
         cancelSignal: spawnPreparation.controller.signal,
         onSessionResolved: (sessionId) => {
@@ -173,32 +191,23 @@ export class DaemonTerminalAdmission {
     clientId: string,
     sessionId: () => string
   ): CreateOrAttachOptions['streamClient'] {
-    const onData = (
-      data: string,
-      rawLength = data.length,
-      transformed = false,
-      seq?: number,
-      incarnationId?: string
-    ): void => {
-      const routedSessionId = sessionId()
-      this.options.transientFactRelay.onSessionData(routedSessionId, data)
-      const lastInputAt = this.options.attachments.lastInputAt(routedSessionId)
-      const isInteractiveOutput =
-        data.length <= DaemonTerminalAdmission.INTERACTIVE_OUTPUT_MAX_CHARS &&
-        lastInputAt !== undefined &&
-        performance.now() - lastInputAt <= DaemonTerminalAdmission.INTERACTIVE_OUTPUT_WINDOW_MS
-      this.options.streamDataBatcher.enqueue(clientId, routedSessionId, data, {
-        flushImmediately: isInteractiveOutput,
-        flushMaxChars: DaemonTerminalAdmission.INTERACTIVE_OUTPUT_MAX_CHARS,
-        rawLength,
-        transformed,
-        seq,
-        ...(incarnationId === undefined ? {} : { incarnationId })
-      })
-    }
     return {
-      onData,
-      onDataWithIncarnation: onData,
+      onData: (data, rawLength = data.length, transformed = false, seq) => {
+        const routedSessionId = sessionId()
+        this.options.transientFactRelay.onSessionData(routedSessionId, data)
+        const lastInputAt = this.options.attachments.lastInputAt(routedSessionId)
+        const isInteractiveOutput =
+          data.length <= DaemonTerminalAdmission.INTERACTIVE_OUTPUT_MAX_CHARS &&
+          lastInputAt !== undefined &&
+          performance.now() - lastInputAt <= DaemonTerminalAdmission.INTERACTIVE_OUTPUT_WINDOW_MS
+        this.options.streamDataBatcher.enqueue(clientId, routedSessionId, data, {
+          flushImmediately: isInteractiveOutput,
+          flushMaxChars: DaemonTerminalAdmission.INTERACTIVE_OUTPUT_MAX_CHARS,
+          rawLength,
+          transformed,
+          seq
+        })
+      },
       onExit: (code, incarnationId, cause) => {
         const routedSessionId = sessionId()
         this.options.log.log('session-exited', {

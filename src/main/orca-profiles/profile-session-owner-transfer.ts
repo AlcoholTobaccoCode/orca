@@ -1,4 +1,5 @@
 import { getDefaultWorkspaceSession } from '../../shared/constants'
+import type { SleepingAgentSessionRecord } from '../../shared/agent-session-resume'
 import type { BrowserPage, BrowserWorkspace } from '../../shared/browser-workspace-types'
 import { remapBrowserPageDocLocation } from '../../shared/browser-page-doc-location'
 import type { Tab, TabGroup } from '../../shared/tab-types'
@@ -11,9 +12,25 @@ import { isWorkspaceKey } from '../../shared/workspace-scope'
 import { SESSION_FIELDS_COPIED_BY_OWNER_KEY } from './profile-project-session-field-disposition'
 import { mapMarkdownFrontmatterVisible } from './profile-session-markdown-transfer'
 
+export {
+  buildMarkdownFrontmatterIdMap,
+  markdownFileIdCandidates
+} from './profile-session-markdown-transfer'
+import { paneBelongsToTabs } from '../../shared/workspace-session-pane-ownership'
+
 export type SessionOwnerProjection = {
   mapOwnerKey: (ownerKey: string) => string | null
   mapWorktreeId: (worktreeId: string) => string
+  /** Keeps a sleeping agent's resume record when it can still resume after the transfer. */
+  projectSleepingAgentSession?: (
+    record: SleepingAgentSessionRecord
+  ) => SleepingAgentSessionRecord | null
+  /** Projects source-partition focus scalars when the selected entities are dormant. */
+  projectSessionFocus?: (args: {
+    source: WorkspaceSessionState
+    transferred: WorkspaceSessionState
+    terminalTabIds: ReadonlySet<string>
+  }) => void
 }
 
 export function extractSessionOwnersForTransfer(
@@ -89,7 +106,7 @@ export function extractSessionOwnersForTransfer(
   )
   transferred.terminalLayoutsByTabId = Object.fromEntries(
     [...terminalTabIds].flatMap((tabId) => {
-      const layout = source.terminalLayoutsByTabId[tabId]
+      const layout = source.terminalLayoutsByTabId?.[tabId]
       return layout ? [[tabId, structuredClone(layout)] as const] : []
     })
   )
@@ -121,6 +138,18 @@ export function extractSessionOwnersForTransfer(
           : []
     )
   )
+  projection.projectSessionFocus?.({ source, transferred, terminalTabIds })
+  if (projection.projectSleepingAgentSession) {
+    const sleepingAgentSessionsByPaneKey = Object.fromEntries(
+      Object.entries(source.sleepingAgentSessionsByPaneKey ?? {}).flatMap(([paneKey, record]) => {
+        const projected = projection.projectSleepingAgentSession?.(record)
+        return projected ? [[paneKey, projected] as const] : []
+      })
+    )
+    if (Object.keys(sleepingAgentSessionsByPaneKey).length > 0) {
+      transferred.sleepingAgentSessionsByPaneKey = sleepingAgentSessionsByPaneKey
+    }
+  }
   transferred.activeWorktreeIdsOnShutdown = source.activeWorktreeIdsOnShutdown
     ?.filter((worktreeId) => projection.mapOwnerKey(worktreeId) !== null)
     .map(projection.mapWorktreeId)
@@ -141,7 +170,7 @@ export function extractSessionOwnersForTransfer(
 
 export function hasTransferredSessionState(session: WorkspaceSessionState): boolean {
   return (
-    Object.keys(session.tabsByWorktree).length > 0 ||
+    Object.keys(session.tabsByWorktree ?? {}).length > 0 ||
     Object.keys(session.openFilesByWorktree ?? {}).length > 0 ||
     Object.keys(session.markdownFrontmatterVisible ?? {}).length > 0 ||
     Object.keys(session.browserTabsByWorktree ?? {}).length > 0 ||
@@ -238,9 +267,4 @@ function mapUnifiedTab(tab: Tab, projection: SessionOwnerProjection): Tab {
 
 function mapTabGroup(group: TabGroup, projection: SessionOwnerProjection): TabGroup {
   return { ...structuredClone(group), worktreeId: projection.mapWorktreeId(group.worktreeId) }
-}
-
-function paneBelongsToTabs(paneKey: string, tabIds: ReadonlySet<string>): boolean {
-  const separator = paneKey.lastIndexOf(':')
-  return separator > 0 && tabIds.has(paneKey.slice(0, separator))
 }

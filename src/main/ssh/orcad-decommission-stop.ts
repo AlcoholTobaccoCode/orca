@@ -5,7 +5,7 @@
  * lost answer is `unverifiable`, never exit; cancelling is how a stop that did not finish is
  * withdrawn, and only an orcad-confirmed cancellation lets the fence go.
  */
-import { isUnconfirmedSshCommandTermination } from './ssh-relay-deploy-helpers'
+import { isUnconfirmedSshCommandTermination } from './ssh-relay-exec-command'
 import {
   cancelRemoteOrcadManagedStop,
   completeRemoteOrcadManagedStop
@@ -15,6 +15,7 @@ import type {
   OrcadDaemonRetirementVerdict,
   OrcadManagedStopRequest
 } from '../../shared/orcad-stop-request'
+import { errorMessage } from '../../shared/error-message'
 
 export type OrcadDecommissionStopSettlement =
   | { state: 'exited'; retirement: OrcadDaemonRetirementVerdict }
@@ -68,8 +69,4 @@ export async function settleOrcadDecommissionStop(
       reason: `${reason} Withdrawing the request gave no verifiable answer: ${errorMessage(error)}`
     }
   }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }

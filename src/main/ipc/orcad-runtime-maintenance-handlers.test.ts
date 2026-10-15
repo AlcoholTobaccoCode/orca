@@ -26,6 +26,13 @@ const { registerOrcadRuntimeMaintenanceHandlers } =
   await import('./orcad-runtime-maintenance-handlers')
 
 const invalidateTransport = vi.fn()
+const clearHostServerStatus = vi.fn()
+const clearHostServerNotes = vi.fn()
+const store = {
+  removeWorkspaceSessionHost: vi.fn(),
+  getRemoteLayoutSnapshot: vi.fn(),
+  setRemoteLayoutSnapshot: vi.fn()
+}
 
 function handler(channel: string): (_event: unknown, args: unknown) => Promise<unknown> {
   const registration = mocks.handle.mock.calls.find(([name]) => name === channel)
@@ -41,7 +48,10 @@ describe('managed orcad maintenance IPC', () => {
     registerOrcadRuntimeMaintenanceHandlers({
       getUserDataPath: () => '/profile',
       getActiveEnvironmentId: () => 'active-environment',
-      invalidateTransport
+      invalidateTransport,
+      clearHostServerStatus,
+      clearHostServerNotes,
+      store
     })
   })
 
@@ -50,9 +60,52 @@ describe('managed orcad maintenance IPC', () => {
     await handler('runtimeEnvironments:updateOrcad')(null, { selector: 'Managed', force: 'yes' })
     expect(mocks.update).toHaveBeenCalledWith('/profile', { selector: 'Managed', force: false })
     expect(invalidateTransport).not.toHaveBeenCalled()
+    expect(clearHostServerNotes).not.toHaveBeenCalled()
     mocks.update.mockResolvedValueOnce({ outcome: 'updated', environment: { id: 'e-1' } })
     await handler('runtimeEnvironments:updateOrcad')(null, { selector: 'Managed', force: true })
     expect(invalidateTransport).toHaveBeenCalledWith('e-1')
+  })
+
+  it.each(['updated', 'already-current'])(
+    'clears the host notes after a verified %s update',
+    async (outcome) => {
+      mocks.update.mockResolvedValueOnce({
+        outcome,
+        environment: { id: 'e-1', orcadDeployment: { sshTargetId: 'ssh-1' } },
+        activeVersion: 'candidate'
+      })
+      await handler('runtimeEnvironments:updateOrcad')(null, { selector: 'Managed', force: true })
+      expect(clearHostServerNotes).toHaveBeenCalledExactlyOnceWith('ssh-1', 'e-1')
+      expect(invalidateTransport).toHaveBeenCalledTimes(outcome === 'updated' ? 1 : 0)
+    }
+  )
+
+  it('clears the notes only after the old transport has been retired', async () => {
+    let finishRetirement: (() => void) | undefined
+    invalidateTransport.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        finishRetirement = resolve
+      })
+    )
+    mocks.update.mockResolvedValueOnce({
+      outcome: 'updated',
+      environment: { id: 'e-1', orcadDeployment: { sshTargetId: 'ssh-1' } }
+    })
+    const updating = handler('runtimeEnvironments:updateOrcad')(null, { selector: 'Managed' })
+    await vi.waitFor(() => expect(invalidateTransport).toHaveBeenCalledOnce())
+    expect(clearHostServerNotes).not.toHaveBeenCalled()
+    finishRetirement?.()
+    await updating
+    expect(clearHostServerNotes).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the previous diagnostic when an update rejects', async () => {
+    mocks.update.mockRejectedValueOnce(new Error('SSH contact lost'))
+    await expect(
+      handler('runtimeEnvironments:updateOrcad')(null, { selector: 'Managed' })
+    ).rejects.toThrow('SSH contact lost')
+    expect(clearHostServerNotes).not.toHaveBeenCalled()
+    expect(invalidateTransport).not.toHaveBeenCalled()
   })
 
   it('reconnects after rollback and after recovery restores a serving slot', async () => {
@@ -68,14 +121,27 @@ describe('managed orcad maintenance IPC', () => {
   })
 
   it('stops with the Active Server guard and the shared removal cleanup', async () => {
-    mocks.stop.mockResolvedValueOnce({ outcome: 'unlinked' })
+    mocks.stop.mockResolvedValueOnce({ outcome: 'unlinked', sshTargetId: 'ssh-1' })
     await handler('runtimeEnvironments:stopOrcad')(null, { selector: ' Managed ' })
     const [, args, policy] = mocks.stop.mock.calls[0] ?? []
     expect(args).toEqual({ selector: 'Managed' })
     expect(policy.isActiveEnvironment('active-environment')).toBe(true)
     expect(policy.isActiveEnvironment('e-1')).toBe(false)
     policy.retireLocalState('e-1')
-    expect(mocks.retire).toHaveBeenCalledWith('e-1', invalidateTransport)
+    expect(mocks.retire).toHaveBeenCalledWith('e-1', invalidateTransport, store)
+    // The SSH host stops naming the unlinked server without waiting for a reconnect.
+    expect(clearHostServerStatus).toHaveBeenCalledWith('ssh-1')
+  })
+
+  it('keeps the SSH host’s managed state when the stop is refused', async () => {
+    mocks.stop.mockResolvedValueOnce({
+      outcome: 'refused',
+      verdict: 'live',
+      code: 'c',
+      reason: 'r'
+    })
+    await handler('runtimeEnvironments:stopOrcad')(null, { selector: 'Managed' })
+    expect(clearHostServerStatus).not.toHaveBeenCalled()
   })
 
   it('rejects a missing selector before touching SSH', async () => {

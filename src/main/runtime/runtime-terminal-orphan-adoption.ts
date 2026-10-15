@@ -4,6 +4,7 @@ import type {
   RuntimeTerminalOrphanAdoptionRequest,
   RuntimeTerminalOrphanAdoptionResult
 } from '../../shared/runtime-types'
+import type { ExecutionHostId } from '../../shared/execution-host'
 import { makePaneKey } from '../../shared/stable-pane-id'
 import { hasClosedTerminalTabRecord } from '../../shared/closed-terminal-tab-tombstones'
 import type { WorkspaceSessionState } from '../../shared/workspace-session-state-types'
@@ -20,6 +21,8 @@ type RuntimeTerminalOrphanAdoptionPorts = {
   getPty: (handle: string) => RuntimePtyWorktreeRecord | null
   getLeaves: (ptyId: string) => readonly RuntimeLeafRecord[]
   getLeaf: (tabId: string, leafId: string) => RuntimeLeafRecord | undefined
+  /** The title display surfaces show for the PTY, which an adopted tab persists. */
+  getDisplayTitle: (pty: RuntimePtyWorktreeRecord) => string | null
   /** Replays a binding the session already held: names the pane without claiming the graph holds it. */
   replayPersistedSurface: (pty: RuntimePtyWorktreeRecord, tabId: string, paneKey: string) => void
   /** Names a pane this adoption just wrote, ahead of the graph statement that will carry it. */
@@ -34,6 +37,8 @@ type RuntimeTerminalOrphanAdoptionPorts = {
 }
 
 export async function adoptRuntimeTerminalOrphansFromInventory(args: {
+  /** The partition the session is read from and written to. */
+  hostId: ExecutionHostId
   request: RuntimeTerminalOrphanAdoptionRequest
   workspace: TerminalWorkspaceLaunchScope
   inventory: PtyControllerInventory
@@ -219,13 +224,15 @@ export async function adoptRuntimeTerminalOrphansFromInventory(args: {
   }
 
   const persisted = buildRuntimeTerminalOrphanSession({
+    hostId: args.hostId,
     session,
     sessionWorktreeId,
     worktreeId: workspace.id,
     request,
     validated,
     topologyTabsById,
-    topologyGroups
+    topologyGroups,
+    getDisplayTitle: ports.getDisplayTitle
   })
   let staged: WorkspaceSessionState | null = null
   try {

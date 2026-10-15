@@ -1,18 +1,22 @@
+import type * as ExecCommandModule from './ssh-relay-exec-command'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-vi.mock('./ssh-relay-deploy-helpers', () => ({
+vi.mock('./ssh-relay-exec-command', async (importOriginal) => ({
+  ...(await importOriginal<typeof ExecCommandModule>()),
   execCommand: vi.fn(),
   isUnconfirmedSshCommandTermination: (error: unknown) =>
     error instanceof Error && error.message === 'channel lost'
 }))
 
 vi.mock('./ssh-remote-platform-detection', () => ({ detectRemoteHostPlatform: vi.fn() }))
+vi.mock('./orcad-windows-host-preparation', () => ({ prepareWindowsOrcadHost: vi.fn() }))
 
-import { execCommand } from './ssh-relay-deploy-helpers'
+import { execCommand } from './ssh-relay-exec-command'
 import { detectRemoteHostPlatform } from './ssh-remote-platform-detection'
+import { prepareWindowsOrcadHost } from './orcad-windows-host-preparation'
 import { resolveOrcadRemoteContext } from './orcad-remote-context'
 import { getRemoteHostPlatform } from './ssh-remote-platform'
-import type { SshConnection } from './ssh-connection'
+import type { OrcadHostTransport } from './orcad-host-transport'
 import {
   readBoundedOrcadRemoteRecord,
   writeAtomicOrcadRemoteRecord
@@ -33,7 +37,7 @@ import { parseOrcadReadinessOutput } from './orcad-remote-launch'
 const mockExec = vi.mocked(execCommand)
 const linux = getRemoteHostPlatform('linux-x64')
 const windows = getRemoteHostPlatform('win32-x64')
-const conn: SshConnection = Object.create(null)
+const conn: OrcadHostTransport = Object.create(null)
 const target = { conn, host: linux }
 const BUILD_HASH = 'abc123def4567890'
 
@@ -103,10 +107,10 @@ describe('orcad host record files', () => {
     expect(String(mockExec.mock.calls.at(-1)?.[1])).toContain('rm -f')
   })
 
-  it('refuses Windows hosts, which the orcad lifecycle does not support', async () => {
+  it('refuses a Windows read that names no pinned node.exe to run it', async () => {
     await expect(
       readBoundedOrcadRemoteRecord({ conn, host: windows }, 'C:/r.json', 64)
-    ).rejects.toThrow()
+    ).rejects.toThrow('pinned node.exe')
     expect(mockExec).not.toHaveBeenCalled()
   })
 })
@@ -210,11 +214,31 @@ describe('installed build identity and readiness', () => {
           fullVersion: '0.2.0+bb01',
           userDataDir: '/home/u/.orca',
           bindHost: '127.0.0.1',
-          port: 7777
+          port: 7777,
+          activationRoot: '/home/u/.orca-remote/.orcad-activation-transaction'
         },
         expectation
       )
     ).rejects.toMatchObject({ verdict: 'rejected' })
+  })
+
+  it('reads readiness once even when the client was descheduled past its deadline', async () => {
+    mockExec.mockResolvedValueOnce('4242').mockResolvedValueOnce(`${readyLine(BUILD_HASH)}\n`)
+    await expect(
+      launchOrcadSlotAndAwaitReadiness(
+        { ...target, readinessTimeoutMs: 0, sleep: async () => {} },
+        {
+          remoteInstallDir: slot.remoteInstallDir,
+          nodePath: '/usr/bin/node',
+          fullVersion: '0.2.0+bb01',
+          userDataDir: '/home/u/.orca',
+          bindHost: '127.0.0.1',
+          port: 7777,
+          activationRoot: '/home/u/.orca-remote/.orcad-activation-transaction'
+        },
+        expectation
+      )
+    ).resolves.toMatchObject({ runtimeId: 'r1' })
   })
 })
 
@@ -234,10 +258,26 @@ describe('readiness parsing bounds', () => {
 })
 
 describe('orcad remote context', () => {
-  it('refuses a Windows host before probing anything else', async () => {
+  it('prepares a Windows host (runtime, host script) before reading the activation record', async () => {
     vi.mocked(detectRemoteHostPlatform).mockResolvedValueOnce(windows)
+    const order: string[] = []
+    vi.mocked(prepareWindowsOrcadHost).mockImplementationOnce(async () => {
+      order.push('prepare')
+    })
+    mockExec.mockImplementation(async (_conn, command: string) => {
+      if (command.includes('record-read')) {
+        order.push('record')
+        return '__ORCAD_RECORD_ABSENT__\r\n'
+      }
+      return 'C:\\Users\\u\r\n'
+    })
     const sshTarget = { id: 't', label: 't', host: 'h', port: 22, username: 'u' }
-    await expect(resolveOrcadRemoteContext(sshTarget, conn)).rejects.toThrow()
-    expect(mockExec).not.toHaveBeenCalled()
+    const context = await resolveOrcadRemoteContext(sshTarget, conn)
+    expect(context).toMatchObject({ serverTarget: 'win32-x64', remoteHome: 'C:/Users/u' })
+    expect(vi.mocked(prepareWindowsOrcadHost).mock.calls[0]?.[0]).toMatchObject({
+      remoteHome: 'C:/Users/u',
+      serverTarget: 'win32-x64'
+    })
+    expect(order).toEqual(['prepare', 'record'])
   })
 })
