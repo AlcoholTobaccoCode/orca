@@ -200,8 +200,14 @@ export function createRuntimeEnvironmentsApi(): NonNullable<
         : callEnvironmentEnvelope<RuntimeStatus>(selector, 'status.get', undefined, timeoutMs),
     retryControlConnection: () => Promise.resolve(),
     prepareBrowserClientHostPlacement: async () => ({ kind: 'server' }),
-    call: ({ selector, method, params, timeoutMs }) =>
-      callEnvironmentEnvelope(selector, method, params, timeoutMs),
+    call: ({ selector, method, params, timeoutMs, expectedEnvironmentPairingRevision }) =>
+      callEnvironmentEnvelope(
+        selector,
+        method,
+        params,
+        timeoutMs,
+        expectedEnvironmentPairingRevision
+      ),
     cancelSubscription: async ({ subscriptionId }) => {
       pendingSubscriptions.get(subscriptionId)?.abort()
     },

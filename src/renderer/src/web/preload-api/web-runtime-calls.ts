@@ -52,13 +52,25 @@ export async function callEnvironmentEnvelope<TResult = unknown>(
   selector: string,
   method: string,
   params?: unknown,
-  timeoutMs?: number
+  timeoutMs?: number,
+  expectedEnvironmentPairingRevision?: number
 ): Promise<RuntimeRpcResponse<TResult>> {
   const environment = resolveEnvironment(selector)
+  const assertPairing = () => {
+    const current = resolveEnvironment(selector)
+    if (
+      expectedEnvironmentPairingRevision !== undefined &&
+      (current.pairingRevision ?? current.createdAt) !== expectedEnvironmentPairingRevision
+    ) {
+      throw new Error('The paired Orca server changed while the request was in progress.')
+    }
+  }
+  assertPairing()
   if (manuallyDisconnectedEnvironmentIds.has(environment.id)) {
     return manuallyDisconnectedResponse(environment)
   }
   const response = await runtimeCallQueuePool.enqueue(environment.id, method, () => {
+    assertPairing()
     if (manuallyDisconnectedEnvironmentIds.has(environment.id)) {
       return Promise.resolve(manuallyDisconnectedResponse(environment))
     }
@@ -67,6 +79,7 @@ export async function callEnvironmentEnvelope<TResult = unknown>(
   if (manuallyDisconnectedEnvironmentIds.has(environment.id)) {
     return manuallyDisconnectedResponse(environment)
   }
+  assertPairing()
   updateEnvironmentFromResponse(environment, response)
   return response as RuntimeRpcResponse<TResult>
 }

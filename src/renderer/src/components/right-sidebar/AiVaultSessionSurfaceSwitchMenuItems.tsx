@@ -11,12 +11,14 @@ export function AiVaultSessionSurfaceSwitchMenuItems({
   menuKind,
   tooltipSide,
   onResumeInNewChat,
-  onResumeInNewCli
+  onResumeInNewCli,
+  cliPending = false
 }: {
   menuKind: 'dropdown' | 'context'
   tooltipSide: 'left' | 'right'
   onResumeInNewChat?: () => void
   onResumeInNewCli?: () => void
+  cliPending?: boolean
 }): React.JSX.Element {
   const Item = menuKind === 'context' ? ContextMenuItem : DropdownMenuItem
   return (
@@ -33,7 +35,7 @@ export function AiVaultSessionSurfaceSwitchMenuItems({
       {onResumeInNewCli ? (
         <Tooltip>
           <TooltipTrigger asChild>
-            <Item onSelect={onResumeInNewCli}>
+            <Item onSelect={onResumeInNewCli} disabled={cliPending} aria-busy={cliPending}>
               <SquareTerminal className="size-3.5" />
               {translate(
                 'auto.components.right.sidebar.AiVaultSessionRow.resumeInNewCli',
