@@ -24,7 +24,9 @@ export const AI_VAULT_AGENTS = [
   'droid',
   'cline',
   'kimi',
-  'muse'
+  'muse',
+  'jcode',
+  'kiro'
 ] as const satisfies readonly TuiAgent[]
 
 // Why: the aiVault.listSessions RPC schema CLAMPS scopePaths to this bound
@@ -74,7 +76,9 @@ export const AI_VAULT_AGENT_LABELS = {
   droid: 'Droid',
   cline: 'Cline',
   kimi: 'Kimi',
-  muse: 'Muse'
+  muse: 'Muse',
+  jcode: 'Jcode',
+  kiro: 'Kiro'
 } as const satisfies Record<AiVaultAgent, string>
 
 export type AiVaultSessionPreviewMessage = {
@@ -116,6 +120,8 @@ export type AiVaultSession = {
   /** Older messages fell out of the newest-N window: the earliest preview turn
    * is NOT the opening ask, so first-prompt consumers must not scan it. */
   previewMessagesTruncated?: boolean
+  /** Bounded opening-prompt identity for Antigravity history joins; never a rolling preview. */
+  antigravityOpeningPrompt?: { hash: string; timestamp: string | null }
   /**
    * Full first non-injected user prompt. List scans omit this (payload/perf);
    * populated only by on-demand `aiVault.getFirstUserPrompt` re-parses for copy.
@@ -212,6 +218,10 @@ export type AiVaultScanIssue = {
 }
 
 export type AiVaultListArgs = {
+  /** Opts a selected runtime-host refresh into content-conditional replies. */
+  afterFingerprint?: string | null
+  /** Opt-in promises this client starts IDE history in a new CLI conversation. */
+  includeAntigravityIdeSessions?: boolean
   limit?: number
   unlimited?: boolean
   force?: boolean
@@ -223,6 +233,9 @@ export type AiVaultListArgs = {
 }
 
 export type AiVaultListResult = {
+  fingerprint?: string
+  /** Requires the caller to reuse the exact previously received body. */
+  unchanged?: true
   sessions: AiVaultSession[]
   issues: AiVaultScanIssue[]
   scannedAt: string

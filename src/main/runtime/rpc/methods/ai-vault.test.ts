@@ -1,3 +1,4 @@
+import '../unused-default-rpc-methods.test-fixture'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { RpcDispatcher } from '../dispatcher'
 import type { RpcRequest } from '../core'
@@ -30,6 +31,8 @@ import {
 } from './ai-vault'
 import { agentSessionRefusalError } from '../../../../shared/agent-session-wire-refusals'
 import { recordStructuredAgentSessionHostInstallRefusal } from '../../structured-agent-session-host-refusal'
+import { setStructuredAgentSessionHost } from '../../../native-chat/agent-session-wire/structured-agent-session-registry'
+import { installCopyingChat } from '../../../ai-vault/structured-session-ownership.test-support'
 import {
   configureAiVaultSessionSources,
   listAiVaultSessions,
@@ -225,6 +228,75 @@ describe('aiVault.prepareSessionResume', () => {
       executionHostId: 'local'
     })
   })
+
+  it('carries a fork request through to the host preparation', async () => {
+    const prepareAiVaultSessionResume = vi.fn().mockResolvedValue({ useRealCodexHome: false })
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: the handler reads only these runtime members.
+    const runtime = {
+      getRuntimeId: () => 'test-runtime',
+      ensureStructuredAgentSessionHost: vi.fn(async () => undefined),
+      prepareAiVaultSessionResume
+    } as unknown as OrcaRuntimeService
+    const dispatcher = new RpcDispatcher({ runtime, methods: AI_VAULT_METHODS })
+
+    await dispatcher.dispatch(
+      makeRequest('aiVault.prepareSessionResume', {
+        agent: 'codex',
+        filePath: '/managed/sessions/rollout-a.jsonl',
+        codexHome: '/managed',
+        fork: true
+      })
+    )
+
+    expect(prepareAiVaultSessionResume).toHaveBeenCalledWith(
+      expect.objectContaining({ fork: true, executionHostId: 'local' })
+    )
+  })
+})
+
+describe('aiVault.prepareSessionResume for a chat whose host makes the copy', () => {
+  afterEach(() => setStructuredAgentSessionHost(null))
+
+  it("has the server's chat copy an OMP conversation and answers the copy", async () => {
+    const providerSessionId = '019fd611-2b3c-7d4e-9f50-6b7c8d9e0f1a'
+    const copy = vi.fn(async () => ({
+      sessionId: 'copy-1',
+      filePath: '/sessions/copy-1.jsonl'
+    }))
+    installCopyingChat({ transport: 'acp', agent: 'omp', nativeId: providerSessionId }, copy)
+    const prepareAiVaultSessionResume = vi.fn()
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: the handler reads only these runtime members.
+    const runtime = {
+      getRuntimeId: () => 'test-runtime',
+      ensureStructuredAgentSessionHost: vi.fn(async () => undefined),
+      prepareAiVaultSessionResume
+    } as unknown as OrcaRuntimeService
+    const dispatcher = new RpcDispatcher({ runtime, methods: AI_VAULT_METHODS })
+
+    const response = await dispatcher.dispatch(
+      makeRequest('aiVault.prepareSessionResume', {
+        agent: 'omp',
+        sessionId: providerSessionId,
+        filePath: `/home/me/.omp/agent/sessions/--repo--/x_${providerSessionId}.jsonl`,
+        codexHome: null,
+        fork: true
+      })
+    )
+
+    expect(response).toMatchObject({
+      ok: true,
+      result: {
+        useRealCodexHome: false,
+        forkedSession: {
+          sessionId: 'copy-1',
+          filePath: '/sessions/copy-1.jsonl',
+          agent: 'omp'
+        }
+      }
+    })
+    expect(copy).toHaveBeenCalledWith(expect.objectContaining({ providerSessionId }))
+    expect(prepareAiVaultSessionResume).not.toHaveBeenCalled()
+  })
 })
 
 // Session history and terminal resume are not chats: a process whose chats are refused still
@@ -297,6 +369,114 @@ describe('aiVault.listSessions handler + shared cache', () => {
 
   afterEach(() => {
     resetAiVaultSessionListCacheForTests()
+  })
+
+  it('isolates IDE opt-in scans from legacy clients sharing the host cache', async () => {
+    const dispatcher = makeDispatcher()
+    await dispatcher.dispatch(
+      makeRequest('aiVault.listSessions', { includeAntigravityIdeSessions: true })
+    )
+    await dispatcher.dispatch(makeRequest('aiVault.listSessions', {}))
+    await dispatcher.dispatch(makeRequest('aiVault.listSessions', {}))
+    expect(scanAiVaultSessionsInService).toHaveBeenCalledTimes(2)
+    expect(scanAiVaultSessionsInService.mock.calls[0]?.[0]).toMatchObject({
+      includeAntigravityIdeSessions: true
+    })
+    expect(scanAiVaultSessionsInService.mock.calls[1]?.[0]?.includeAntigravityIdeSessions).not.toBe(
+      true
+    )
+  })
+
+  it('omits unchanged session bodies only for clients with the matching fingerprint', async () => {
+    const dispatcher = makeDispatcher()
+    const first = await dispatcher.dispatch(
+      makeRequest('aiVault.listSessions', { afterFingerprint: null })
+    )
+    if (
+      !first.ok ||
+      typeof first.result !== 'object' ||
+      first.result === null ||
+      !('fingerprint' in first.result) ||
+      typeof first.result.fingerprint !== 'string'
+    ) {
+      throw new Error('Opt-in response did not include a fingerprint')
+    }
+    const afterFingerprint = first.result.fingerprint
+    expect(afterFingerprint).toMatch(/^[0-9a-f]{64}$/)
+    await expect(
+      dispatcher.dispatch(makeRequest('aiVault.listSessions', { afterFingerprint }))
+    ).resolves.toMatchObject({
+      ok: true,
+      result: { unchanged: true, fingerprint: afterFingerprint }
+    })
+    const legacy = await dispatcher.dispatch(makeRequest('aiVault.listSessions', {}))
+    expect(legacy).toMatchObject({ ok: true, result: makeResult() })
+    if (legacy.ok) {
+      expect(legacy.result).not.toHaveProperty('fingerprint')
+    }
+  })
+
+  it('keeps unlimited history un-hashed and full even with an opt-in request', async () => {
+    const dispatcher = makeDispatcher()
+    const response = await dispatcher.dispatch(
+      makeRequest('aiVault.listSessions', {
+        unlimited: true,
+        afterFingerprint: null
+      })
+    )
+    expect(response).toMatchObject({ ok: true, result: makeResult() })
+    if (response.ok) {
+      expect(response.result).not.toHaveProperty('fingerprint')
+      expect(response.result).not.toHaveProperty('unchanged')
+    }
+    expect(scanAiVaultSessionsInService.mock.calls[0]?.[0]).toMatchObject({ unlimited: true })
+  })
+
+  it('fingerprints live projected content even when the cached scan stamp does not change', async () => {
+    const source = { ...makeResult(), sessions: [makeSession()] }
+    scanAiVaultSessionsInService.mockResolvedValue(source)
+    const dispatcher = makeDispatcher()
+    const first = await dispatcher.dispatch(
+      makeRequest('aiVault.listSessions', { afterFingerprint: null })
+    )
+    if (
+      !first.ok ||
+      typeof first.result !== 'object' ||
+      first.result === null ||
+      !('fingerprint' in first.result) ||
+      typeof first.result.fingerprint !== 'string'
+    ) {
+      throw new Error('Expected fingerprint')
+    }
+    source.sessions[0].title = 'Changed without a new scan stamp'
+    const changed = await dispatcher.dispatch(
+      makeRequest('aiVault.listSessions', {
+        afterFingerprint: first.result.fingerprint
+      })
+    )
+    expect(changed).toMatchObject({
+      ok: true,
+      result: {
+        sessions: [{ title: 'Changed without a new scan stamp' }],
+        scannedAt: SCANNED_AT
+      }
+    })
+    if (changed.ok) {
+      expect(changed.result).not.toHaveProperty('unchanged')
+      expect(changed.result).not.toMatchObject({ fingerprint: first.result.fingerprint })
+    }
+    expect(scanAiVaultSessionsInService).toHaveBeenCalledTimes(1)
+    const forced = await dispatcher.dispatch(
+      makeRequest('aiVault.listSessions', {
+        afterFingerprint: first.result.fingerprint,
+        force: true
+      })
+    )
+    expect(forced.ok).toBe(true)
+    if (forced.ok) {
+      expect(forced.result).not.toHaveProperty('unchanged')
+    }
+    expect(scanAiVaultSessionsInService).toHaveBeenCalledTimes(2)
   })
 
   it('returns the AiVaultListResult unchanged', async () => {

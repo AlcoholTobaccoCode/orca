@@ -1,8 +1,16 @@
-import { execFile } from 'node:child_process'
-import { mkdir, mkdtemp, readdir, readFile, rm, unlink, utimes, writeFile } from 'node:fs/promises'
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  unlink,
+  utimes,
+  writeFile
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { promisify } from 'node:util'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
   isUnsupportedMergeTreeMergeBaseError,
@@ -38,10 +46,10 @@ import { parseWorktreeList } from './git-worktree-porcelain-parser'
 import { fastForwardLocalBaseBranch } from './worktree/local-base-branch-fast-forward'
 import { gitChangeListArgs, parseGitChangeList } from './git-change-list'
 import { encodeGitPathspecs } from './git-pathspec-stdin'
-import { endSubprocessStdin } from './subprocess-stdin-write'
+import { GitBinaryTestFixture } from './git-binary.test-fixture'
+import { registerGitRepositoryRegistrationBinaryCompatibilityCase } from './git-repository-registration-binary-compatibility.test-cases'
 import { registerGitResolutionBinaryCompatibilityCases } from './git-resolution-binary-compatibility.test-cases'
 
-const execFileAsync = promisify(execFile)
 const image = process.env.ORCA_GIT_COMPAT_IMAGE
 const binary = process.env.ORCA_GIT_COMPAT_BINARY
 const expectedVersion = process.env.ORCA_GIT_COMPAT_VERSION
@@ -51,6 +59,7 @@ type GitResult = { stdout: string; stderr: string }
 
 describeBinaryCompatibility('real Git binary compatibility', () => {
   let repoPath = ''
+  let fixture: GitBinaryTestFixture
   let version = { major: 0, minor: 0 }
 
   async function runGit(
@@ -58,53 +67,7 @@ describeBinaryCompatibility('real Git binary compatibility', () => {
     env?: NodeJS.ProcessEnv,
     stdin?: string
   ): Promise<GitResult> {
-    if (image) {
-      const dockerUser =
-        typeof process.getuid === 'function' && typeof process.getgid === 'function'
-          ? ['--user', `${process.getuid()}:${process.getgid()}`]
-          : []
-      const pending = execFileAsync(
-        'docker',
-        [
-          'run',
-          '--rm',
-          ...(stdin === undefined ? [] : ['-i']),
-          '--network=none',
-          ...dockerUser,
-          ...Object.entries(env ?? {}).flatMap(([key, value]) =>
-            value === undefined ? [] : ['--env', `${key}=${value}`]
-          ),
-          '-v',
-          `${repoPath}:/repo`,
-          '-w',
-          '/repo',
-          image,
-          '-c',
-          'safe.directory=/repo',
-          ...args
-        ],
-        { maxBuffer: 2 * 1024 * 1024 }
-      )
-      if (stdin !== undefined) {
-        endSubprocessStdin(pending.child.stdin, stdin)
-      }
-      return pending
-    }
-    const pending = execFileAsync(binary!, args, {
-      cwd: repoPath,
-      env: {
-        ...process.env,
-        HOME: repoPath,
-        XDG_CONFIG_HOME: repoPath,
-        GIT_CONFIG_NOSYSTEM: '1',
-        ...env
-      },
-      maxBuffer: 2 * 1024 * 1024
-    })
-    if (stdin !== undefined) {
-      endSubprocessStdin(pending.child.stdin, stdin)
-    }
-    return pending
+    return fixture.exec(args, fixture.executionRoot, env, stdin)
   }
 
   function supports(major: number, minor: number): boolean {
@@ -126,7 +89,9 @@ describeBinaryCompatibility('real Git binary compatibility', () => {
   }
 
   beforeAll(async () => {
-    repoPath = await mkdtemp(join(tmpdir(), 'orca-git-binary-compat-'))
+    repoPath = await realpath(await mkdtemp(join(tmpdir(), 'orca-git-binary-compat-')))
+    fixture = new GitBinaryTestFixture(repoPath, '/repo')
+    await fixture.start()
     const versionOutput = await runGit(['--version'])
     expect(versionOutput.stdout).toContain(`git version ${expectedVersion}`)
     const match = versionOutput.stdout.match(/git version (\d+)\.(\d+)/)
@@ -143,9 +108,15 @@ describeBinaryCompatibility('real Git binary compatibility', () => {
 
   afterAll(async () => {
     if (repoPath) {
-      await rm(repoPath, { recursive: true, force: true })
+      try {
+        await fixture.stop()
+      } finally {
+        await rm(repoPath, { recursive: true, force: true })
+      }
     }
   })
+
+  registerGitRepositoryRegistrationBinaryCompatibilityCase(runGit, () => repoPath, Boolean(image))
 
   it('stages, unstages and restores NUL-delimited literal pathspecs from stdin', async () => {
     const fixturePath = join(repoPath, 'stdin-pathspec')
@@ -208,6 +179,19 @@ describeBinaryCompatibility('real Git binary compatibility', () => {
     const root = await runGit(gitChangeListArgs(null, head))
     expect(parseGitChangeList(root.stdout)).toEqual([
       { path: 'tracked.txt', status: 'added', added: 1, removed: 0 }
+    ])
+    const names = await runGit([
+      'diff-tree',
+      '--root',
+      '--no-commit-id',
+      '-r',
+      '--name-status',
+      '-z',
+      head,
+      '--'
+    ])
+    expect(parseGitChangeList(names.stdout, 'name-status')).toEqual([
+      { path: 'tracked.txt', status: 'added' }
     ])
   })
 
@@ -403,12 +387,21 @@ describeBinaryCompatibility('real Git binary compatibility', () => {
     await expect(readFile(lockPath, 'utf8')).resolves.toBe(lockReason)
     await expect(readFile(join(repoPath, 'compat-prepared', 'tracked.txt'))).rejects.toThrow()
     await runGit(['-C', 'compat-prepared', 'reset', '--hard', 'HEAD'])
-    expect(
-      (await runGit(['-C', 'compat-prepared', 'rev-parse', '--git-path', 'locked'])).stdout.trim()
-    ).toContain('worktrees/compat-prepared/locked')
-    expect(
-      (await runGit(['-C', 'compat-prepared', 'rev-parse', '--git-common-dir'])).stdout.trim()
-    ).toContain('.git')
+    const lockPointers = await runGit([
+      '-C',
+      'compat-prepared',
+      'rev-parse',
+      '--git-path',
+      'locked',
+      '--git-common-dir'
+    ])
+    const pointerLines = lockPointers.stdout.split('\n')
+    expect(pointerLines).toHaveLength(3)
+    expect(pointerLines[0]?.replace(/\r$/, '').replaceAll('\\', '/')).toMatch(
+      /\.git\/worktrees\/compat-prepared\/locked$/
+    )
+    expect(pointerLines[1]?.replace(/\r$/, '').replaceAll('\\', '/')).toMatch(/(?:^|\/)\.git$/)
+    expect(pointerLines[2]).toBe('')
     // Why: `-f -f` moves a locked preparation while preserving its lock reason (Git >=2.25).
     await runGit(['worktree', 'move', '-f', '-f', 'compat-prepared', 'compat-final'])
     await runGit([

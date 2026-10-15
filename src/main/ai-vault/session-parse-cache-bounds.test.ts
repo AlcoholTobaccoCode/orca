@@ -25,6 +25,7 @@ import {
 import {
   SESSION_PARSE_CACHE_JSON_LIMITS,
   SESSION_PARSE_CACHE_MAX_BYTES,
+  SESSION_PARSE_CACHE_SCHEMA_VERSION,
   serializeSessionParseCacheSnapshotPiecesCooperatively
 } from './session-parse-cache-snapshot-serialization'
 
@@ -40,7 +41,6 @@ const row = (path: string, mtimeMs: number): [string, PersistedSessionParseCache
   path,
   entry(mtimeMs)
 ]
-const stats = { reused: 0, fullParses: 1, incremental: 0, earlyStopped: 0, bytesRead: 0 }
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'orca-cache-bounds-'))
@@ -59,7 +59,14 @@ it('loads the newest 4096 unique rows across duplicate-heavy input and keeps in-
   entries.push(...Array.from({ length: 5000 }, (_, index) => row('p4199', 5000 + index)))
   entries.push(row('in-process', 1))
   seedSessionParseCache([row('in-process', 20_000)])
-  await writeFile(file, JSON.stringify({ schemaVersion: 3, appVersion: 'old-release', entries }))
+  await writeFile(
+    file,
+    JSON.stringify({
+      schemaVersion: SESSION_PARSE_CACHE_SCHEMA_VERSION,
+      appVersion: 'old-release',
+      entries
+    })
+  )
   await ensureSessionParseCacheLoaded()
   expect(snapshotSessionParseCacheForPersistence()).toHaveLength(4096)
   expect(getSessionParseCacheEntry('p4199')?.mtimeMs).toBe(9999)
@@ -93,10 +100,10 @@ it('rejects an oversized sparse file before decoding and preserves resident work
 
 it('rejects excessive tokens, depth, and malformed older rows before seeding any tail', async () => {
   for (const raw of [
-    `{"schemaVersion":3,"appVersion":"old","entries":[],"wide":[${'0,'.repeat(1_000_000)}0]}`,
-    `{"schemaVersion":3,"appVersion":"old","entries":[],"deep":${'['.repeat(33)}0${']'.repeat(33)}}`,
+    `{"schemaVersion":${SESSION_PARSE_CACHE_SCHEMA_VERSION},"appVersion":"old","entries":[],"wide":[${'0,'.repeat(1_000_000)}0]}`,
+    `{"schemaVersion":${SESSION_PARSE_CACHE_SCHEMA_VERSION},"appVersion":"old","entries":[],"deep":${'['.repeat(33)}0${']'.repeat(33)}}`,
     JSON.stringify({
-      schemaVersion: 3,
+      schemaVersion: SESSION_PARSE_CACHE_SCHEMA_VERSION,
       appVersion: 'old',
       entries: [['bad', {}], ...Array.from({ length: 4200 }, (_, index) => row(`p${index}`, index))]
     })
@@ -127,8 +134,8 @@ it('retains a valid newest suffix under both byte and structural capacity', asyn
 })
 
 it('keeps the previous atomic snapshot when its newest row cannot fit', async () => {
-  seedSessionParseCache([row('valid', 1)])
-  scheduleSessionParseCachePersist(stats)
+  storeSessionParseCacheEntry('valid', { ...entry(1), resume: null })
+  scheduleSessionParseCachePersist()
   await flushSessionParseCachePersist()
   const previous = await readFile(file, 'utf8')
   const session: AiVaultSession = {
@@ -159,7 +166,7 @@ it('keeps the previous atomic snapshot when its newest row cannot fit', async ()
   }
   Reflect.set(session, 'syntheticDeepField', deep)
   storeSessionParseCacheEntry('newest', { ...entry(2), session, resume: null })
-  scheduleSessionParseCachePersist(stats)
+  scheduleSessionParseCachePersist()
   await flushSessionParseCachePersist()
   expect(await readFile(file, 'utf8')).toBe(previous)
 })

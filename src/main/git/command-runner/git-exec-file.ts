@@ -5,10 +5,7 @@ import {
   resolveGitFetchHeadCommand,
   runWithGitFetchHeadLock
 } from '../../../shared/git-fetch-head-lock'
-import {
-  isWslLinkedWorktreeGitRoutingCandidate,
-  prepareWslLinkedWorktreeGitRouting
-} from '../wsl-linked-worktree-git-routing'
+import { pendingWslDriveCheckoutGitRouting } from '../wsl-drive-checkout-git-routing'
 import { resolveCommand, type ResolvedCommand } from './wsl-command-resolution'
 import { annotateWslHostFailure } from './wsl-host-failure'
 import type { GitAdmissionTier, GitExecOptions } from './git-exec-options'
@@ -27,6 +24,7 @@ import { nonInteractiveGitEnv, untranslatedGitOutputEnv } from './git-process-en
 import { acquireGitAdmission } from './git-subprocess-admission'
 import { GitCommandTimeoutError, gitCommandTimeoutMs } from './git-command-timeout'
 import { classifyGitCommand } from '../../../shared/git-command-classification'
+import { createAbortError } from './abort-error'
 
 /**
  * Async git command execution. Drop-in replacement for
@@ -40,10 +38,9 @@ async function gitExecFileAsyncUnlocked(
   return withGitSpan(
     { args, ...(options.cwd !== undefined ? { cwd: options.cwd } : {}) },
     async (span) => {
-      if (isWslLinkedWorktreeGitRoutingCandidate(options.cwd, options.wslDistro)) {
-        await prepareWslLinkedWorktreeGitRouting(options.cwd, options.wslDistro, {
-          signal: options.signal
-        })
+      const checkoutRoutingReady = pendingWslDriveCheckoutGitRouting(args, options)
+      if (checkoutRoutingReady) {
+        await checkoutRoutingReady
       }
       const readEnvironmentReady = pendingWslDirectGitReadEnvironment(args, options)
       if (readEnvironmentReady) {
@@ -74,7 +71,7 @@ async function gitExecFileAsyncUnlocked(
             cwd: options.cwd,
             wslDistro: options.wslDistro,
             tier: options.admissionTier,
-            signal: options.signal
+            signal: options.admissionSignal ?? options.signal
           })
       span?.setAttribute('git.queue_wait_ms', grant.queueWaitMs)
       const timeoutMs = gitCommandTimeoutMs(args, options.timeout, options.timeoutMsForTest)
@@ -153,6 +150,10 @@ async function gitExecFileAsyncUnlocked(
         }
       }
       try {
+        options.admissionSignal?.throwIfAborted()
+        if (options.canStart?.() === false) {
+          throw createAbortError()
+        }
         return await runCapturedCommand()
       } finally {
         const termination = terminationState.current
@@ -200,10 +201,9 @@ export async function gitExecFileAsyncBuffer(
   }
 ): Promise<{ stdout: Buffer }> {
   return withGitSpan({ args, cwd: options.cwd }, async (span) => {
-    if (isWslLinkedWorktreeGitRoutingCandidate(options.cwd, options.wslDistro)) {
-      await prepareWslLinkedWorktreeGitRouting(options.cwd, options.wslDistro, {
-        signal: options.signal
-      })
+    const checkoutRoutingReady = pendingWslDriveCheckoutGitRouting(args, options)
+    if (checkoutRoutingReady) {
+      await checkoutRoutingReady
     }
     const readEnvironmentReady = pendingWslDirectGitReadEnvironment(args, options)
     if (readEnvironmentReady) {

@@ -8,7 +8,7 @@ import { withLocalGitCapabilityCacheForExecution } from './git-capability-state'
 import { withRepoRefMaintenancePaused } from './local-repo-ref-maintenance'
 import { gitExecFileAsync } from './runner'
 import { createLocalGitObjectQuarantine } from './local-git-object-quarantine'
-import { isBranchInDetachedWorktree } from '../../shared/git-worktree-admin'
+import { isBranchReservedByWorktreeOperation } from '../../shared/git-worktree-admin'
 import { parseWorktreeList } from '../../shared/git-worktree-porcelain-parser'
 import { isBranchCheckedOutInWorktreeError } from '../../shared/git-branch-delete-refusal'
 import type { GitWorktreeExecOptions, RemoveWorktreeOptions } from './worktree-operation-options'
@@ -205,6 +205,6 @@ async function isLocalBranchCheckedOut(
   const worktrees = parseWorktreeList(stdout)
   return (
     worktrees.some((worktree) => normalizeLocalBranchRef(worktree.branch) === branchName) ||
-    isBranchInDetachedWorktree(repoPath, branchName, worktrees, options)
+    isBranchReservedByWorktreeOperation(repoPath, branchName, worktrees, options)
   )
 }

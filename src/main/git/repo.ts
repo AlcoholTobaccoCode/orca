@@ -11,8 +11,11 @@ import { gitExecFileAsync } from './runner'
 
 export {
   isGitRepo,
+  isGitRepoAsync,
   inspectGitRepoForRegistration,
+  inspectGitRepoForRegistrationAsync,
   getGitRepoRoot,
+  getGitRepoRootAsync,
   getLinkedWorktreeMainRepoRoot,
   normalizeGitRepoRootForInputPath
 } from './repo-detection'
@@ -107,7 +110,7 @@ export async function getRecentDriftSubjects(
 }
 
 /** Parse `git remote` stdout into a remote count. */
-export function parseRemoteCount(stdout: string): number {
+function parseRemoteCount(stdout: string): number {
   return stdout.split('\n').filter((line) => line.trim().length > 0).length
 }
 
@@ -125,7 +128,8 @@ export async function getRemoteCount(path: string): Promise<number> {
 /** Resolve the configured push remote without assuming a provider. */
 export async function getDefaultRemote(
   path: string,
-  options: LocalGitExecOptions = {}
+  options: LocalGitExecOptions = {},
+  knownRemoteNames?: readonly string[]
 ): Promise<string> {
   const defaultRef = await getDefaultBaseRefAsync(path, options)
   const defaultBranch = defaultRef
@@ -150,11 +154,14 @@ export async function getDefaultRemote(
   }
 
   try {
-    const { stdout } = await gitExecFileAsync(['remote'], gitExecOptions(path, options))
-    const remotes = stdout
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
+    let remotes = knownRemoteNames
+    if (remotes === undefined) {
+      const { stdout } = await gitExecFileAsync(['remote'], gitExecOptions(path, options))
+      remotes = stdout
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+    }
     if (remotes.includes('origin')) {
       return 'origin'
     }
