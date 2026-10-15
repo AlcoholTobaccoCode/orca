@@ -127,7 +127,6 @@ describe('Session History scan progress, scanner child to window', () => {
     ])
     expect(localAiVaultScanProgress('')).toEqual({
       ...final,
-      scanKey: '',
       scanId: '',
       stage: 'finished',
       startedAt: 5_000,

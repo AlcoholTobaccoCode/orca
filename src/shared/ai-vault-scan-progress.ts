@@ -25,7 +25,6 @@ export type AiVaultScanWork = {
  */
 export type AiVaultScanProgress = Omit<AiVaultScanWork, 'stage'> & {
   scanId: string
-  scanKey: string
   stage: AiVaultScanWork['stage'] | 'finished' | 'stopped'
   startedAt: number
   settledAt: number | null

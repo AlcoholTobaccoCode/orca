@@ -50,7 +50,7 @@ function publish(scanKey: string, next: AiVaultScanProgress | null): void {
   }
 }
 
-/** A replacement clears its previous strip before roots preparation can yield. */
+/** A replacement clears its previous entry before roots preparation can yield. */
 export function startLocalAiVaultScanProgress(
   scanKey: string,
   scanId: string,
@@ -58,7 +58,6 @@ export function startLocalAiVaultScanProgress(
 ): LocalAiVaultScanProgressHandle {
   let serviceRequestId: number | null = null
   let current: AiVaultScanProgress = {
-    scanKey,
     scanId,
     stage: 'finding',
     agents: [],

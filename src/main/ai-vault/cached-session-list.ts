@@ -36,7 +36,6 @@ const AI_VAULT_CACHE_TTL_MS = 60_000
 export class AiVaultLocalScanError extends Error {
   constructor(
     readonly scanId: string,
-    readonly scanKey: string,
     readonly original: unknown
   ) {
     super(original instanceof Error ? original.message : String(original))
@@ -138,9 +137,7 @@ export async function listAiVaultSessions(
     },
     onError: (error) => progress?.fail(error),
     onReject: (error, scanId) =>
-      isAiVaultScanCancelledError(error)
-        ? error
-        : new AiVaultLocalScanError(scanId, scanKey, error),
+      isAiVaultScanCancelledError(error) ? error : new AiVaultLocalScanError(scanId, error),
     start: async (scanSignal, scanId) => {
       const scanProgress = progress
       if (!scanProgress) {
@@ -157,7 +154,7 @@ export async function listAiVaultSessions(
         scanSignal,
         scanProgress
       )
-      const result = { ...scanned, scanId, scanKey }
+      const result = { ...scanned, scanId }
       // A delete (or other invalidation) landed while this scan was running:
       // its result predates the delete, so caching it would resurrect the
       // deleted session for the TTL. Return it to this caller but don't cache.

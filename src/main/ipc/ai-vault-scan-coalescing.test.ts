@@ -117,7 +117,6 @@ describe('Agent Session History scan coalescing', () => {
     expect(result).toMatchObject({
       sessions: [],
       scanId: expect.any(String),
-      scanKey: expect.any(String),
       issues: [expect.objectContaining({ message: 'transcript root is unreadable', kind: 'host' })]
     })
     expect(result).not.toHaveProperty('cancelled')

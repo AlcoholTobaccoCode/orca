@@ -220,9 +220,7 @@ async function scanLocalAiVaultSessionsAsIssue(
       path: 'this computer',
       message: describeAiVaultScanError(raw)
     })
-    return error instanceof AiVaultLocalScanError
-      ? { ...result, scanId: error.scanId, scanKey: error.scanKey }
-      : result
+    return error instanceof AiVaultLocalScanError ? { ...result, scanId: error.scanId } : result
   }
 }
 
