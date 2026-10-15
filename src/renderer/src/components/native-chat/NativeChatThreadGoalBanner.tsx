@@ -10,7 +10,7 @@ import {
   agentSessionThreadGoalElapsedSeconds,
   agentSessionThreadGoalStatusChange
 } from '../../../../shared/agent-session-thread-goal'
-import type { AgentSessionThreadGoalChange } from '../../../../shared/agent-session-wire'
+import type { AgentSessionThreadGoalChange } from '../../../../shared/agent-session-thread-goal-wire'
 import {
   formatNativeChatThreadGoalElapsed,
   nativeChatThreadGoalStatusLabel
@@ -47,6 +47,8 @@ function GoalAction(props: {
 export function NativeChatThreadGoalBanner(props: {
   goal: AgentJournalThreadGoal
   pending: boolean
+  /** False where only the agent's own `/goal` changes the goal, which has no pause. */
+  hostChanges: boolean
   isVisible: boolean
   /** The session's running turn, or null when idle; goal time accrues only while one runs. */
   runningTurn: { startedAt: number | null } | null
@@ -57,7 +59,7 @@ export function NativeChatThreadGoalBanner(props: {
   const { runningTurn } = props
   const now = useNow(1_000, props.isVisible && goal.status === 'active' && runningTurn !== null)
   const label = nativeChatThreadGoalStatusLabel(goal.status)
-  const statusChange = agentSessionThreadGoalStatusChange(goal.status)
+  const statusChange = props.hostChanges ? agentSessionThreadGoalStatusChange(goal.status) : null
   if (label === null) {
     return null
   }
@@ -85,7 +87,8 @@ export function NativeChatThreadGoalBanner(props: {
           <div className="flex shrink-0 items-center">
             <GoalAction
               label={translate('components.native-chat.goal.clear', 'Clear goal')}
-              disabled={pending}
+              // Sent mid-turn, the agent's `/goal clear` would steer the turn, not run as a command.
+              disabled={pending || (!props.hostChanges && runningTurn !== null)}
               onClick={() => onChange({ kind: 'clear' })}
             >
               <Trash2 className="size-3.5" />

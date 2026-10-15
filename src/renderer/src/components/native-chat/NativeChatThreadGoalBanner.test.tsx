@@ -38,6 +38,7 @@ function renderBanner(
       <NativeChatThreadGoalBanner
         goal={value}
         pending={pending}
+        hostChanges
         isVisible
         runningTurn={runningTurn}
         onChange={onChange}

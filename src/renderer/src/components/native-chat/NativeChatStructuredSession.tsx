@@ -338,6 +338,7 @@ export function NativeChatStructuredSession(
               key={props.sessionId}
               goal={controller.threadGoal.goal}
               pending={controller.threadGoal.pending}
+              hostChanges={controller.threadGoal.hostChanges}
               isVisible={props.isVisible}
               runningTurn={
                 controller.turnId === null

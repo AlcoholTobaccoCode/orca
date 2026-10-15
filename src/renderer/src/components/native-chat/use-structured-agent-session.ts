@@ -107,6 +107,7 @@ export function useStructuredAgentSession(args: {
     sendSource,
     unavailable,
     threadGoal: threadGoalSupport,
+    reportedThreadGoal,
     contextUsage: contextUsageSupport,
     rewind: rewindSupport,
     acceptsImages
@@ -165,12 +166,6 @@ export function useStructuredAgentSession(args: {
     sendOptions
   })
 
-  const threadGoal = useStructuredAgentSessionThreadGoal({
-    journalItems: transportState.journalItems,
-    journalEpoch: state.epoch,
-    support: threadGoalSupport,
-    mutate
-  })
   const contextUsage = useStructuredAgentSessionContextUsage(
     transportState.journalItems,
     contextUsageSupport,
@@ -203,6 +198,20 @@ export function useStructuredAgentSession(args: {
   })
   // A queued send is a card, never a transcript bubble.
   const isWorking = transportState.isWorking || transportState.queueSendsNext
+  // A message typed during a command queues behind it on the host.
+  const send = (...input: Parameters<typeof sends.send>) =>
+    // Legacy: an older host refuses sends while a command runs; removable once those hosts age out.
+    (!commandPending.current || hostStatesTurnScopes(transportState.journalItems)) &&
+    rewind.admitsSend() &&
+    sends.send(...input)
+  const threadGoal = useStructuredAgentSessionThreadGoal({
+    journalItems: transportState.journalItems,
+    journalEpoch: state.epoch,
+    support: threadGoalSupport,
+    reported: reportedThreadGoal,
+    mutate,
+    send
+  })
   const transcriptPending = useMemo(
     () => pendingSendsOutsideQueuedCards(pending, queuedMessageIds, isWorking),
     [isWorking, pending, queuedMessageIds]
@@ -276,12 +285,7 @@ export function useStructuredAgentSession(args: {
     sendOut: sending || sends.held,
     /** The journal's rows for sent messages, which carry a rejected message's whole fact. */
     submissions: transportState.submissions,
-    // A message typed during a command queues behind it on the host.
-    send: (...input: Parameters<typeof sends.send>) =>
-      // Legacy: an older host refuses sends while a command runs; removable once those hosts age out.
-      (!commandPending.current || hostStatesTurnScopes(transportState.journalItems)) &&
-      rewind.admitsSend() &&
-      sends.send(...input),
+    send,
     isWorking,
     queueSendsNext: transportState.queueSendsNext,
     workingStartedAt: transportState.turnTiming.workingStartedAt,

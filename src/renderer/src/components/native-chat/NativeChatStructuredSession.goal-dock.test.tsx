@@ -77,7 +77,7 @@ function sessionView(): React.JSX.Element {
 function showStripAndGoal(status: AgentJournalThreadGoal['status'] = 'active'): void {
   mocks.monitoringBackgroundTasks = true
   mocks.backgroundTasks = [{ id: 'task-agent', kind: 'agent' }]
-  mocks.threadGoal = { goal: goal(status), pending: false, change: vi.fn() }
+  mocks.threadGoal = { goal: goal(status), pending: false, hostChanges: true, change: vi.fn() }
 }
 
 describe('NativeChatStructuredSession task strip on the goal tab', () => {

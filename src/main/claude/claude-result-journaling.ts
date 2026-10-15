@@ -25,6 +25,8 @@ export type ClaudeResultJournalContext = Pick<
   | 'corrections'
   | 'turn'
   | 'authenticationFailures'
+  | 'threadGoal'
+  | 'backgroundTasks'
 > & {
   prompts: ClaudeJournalPrompts
   context: ClaudeContextFacts
@@ -40,7 +42,9 @@ export function journalClaudeResult(
     turn,
     prompts,
     context,
-    authenticationFailures
+    authenticationFailures,
+    threadGoal,
+    backgroundTasks
   }: ClaudeResultJournalContext,
   message: Record<string, unknown>,
   observedAt: number
@@ -70,6 +74,11 @@ export function journalClaudeResult(
     // would otherwise retain that text for the life of the session.
     streamedBlocks.clear()
     streamedText.settle()
+  }
+  const goal = threadGoal.settle(message, backgroundTasks.running, observedAt)
+  if (goal) {
+    sink.appendItem(goal.identity, goal.body, { turnScope: endedTurnScope })
+    sink.publish()
   }
   const kind = claudeProviderFrameKind(message)
   const failure = claudeResultFailure(message, leftToStop)

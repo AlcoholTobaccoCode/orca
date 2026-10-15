@@ -1,0 +1,124 @@
+import { describe, expect, it, vi } from 'vitest'
+import type {
+  AgentJournalItemBody,
+  AgentJournalItemIdentity,
+  AgentJournalThreadGoal
+} from '../../shared/agent-session-journal-types'
+import type { StructuredAgentSessionEventSink } from '../native-chat/agent-session-wire/structured-agent-session-event-sink'
+import { createClaudeJournalTranslator } from './claude-structured-journal-translation'
+
+// Frame shapes captured from Claude Code 2.1.280 stream-json: `/goal` answers with a root
+// `<synthetic>` assistant reply, and a met goal ends the turn with no goal frame of its own.
+const OBJECTIVE = 'reply with exactly the word done'
+
+function goalSink(journalGoal: AgentJournalThreadGoal | null = null) {
+  const rows: { identity: AgentJournalItemIdentity; body: AgentJournalItemBody }[] = []
+  const sink: StructuredAgentSessionEventSink = {
+    appendItem: (identity, body) => rows.push({ identity, body }),
+    appendTombstone: vi.fn(),
+    publish: vi.fn(),
+    journalLinkage: () => ({
+      epoch: 'test',
+      visitItemsWithLinkage: () => {},
+      threadGoal: () => journalGoal
+    })
+  }
+  const translator = createClaudeJournalTranslator({ sink, coalesceMs: 0 })
+  let at = 1_000
+  const frame = (message: Record<string, unknown>, elapsedMs = 1_000) => {
+    at += elapsedMs
+    translator.handle({
+      type: 'message',
+      sessionId: 'orca-session',
+      observedAt: at,
+      message: { session_id: 'claude-session', parent_tool_use_id: null, ...message }
+    })
+  }
+  const reply = (uuid: string, model: string, text: string) =>
+    frame({
+      type: 'assistant',
+      uuid,
+      message: { role: 'assistant', model, content: [{ type: 'text', text }] }
+    })
+  const result = (uuid: string, fields: Record<string, unknown>, elapsedMs?: number) =>
+    frame({ type: 'result', uuid, ...fields }, elapsedMs)
+  const goals = () =>
+    rows.flatMap(({ identity, body }) =>
+      body.kind === 'status' && body.threadGoal ? [{ identity, body }] : []
+    )
+  return { reply, result, goals }
+}
+
+describe('Claude /goal journaling', () => {
+  it('journals the goal Claude reports, its time, and its completion when Claude ends on its own', () => {
+    const { reply, result, goals } = goalSink()
+    reply('goal-set', '<synthetic>', `Goal set: ${OBJECTIVE}`)
+    reply('work-1', 'claude-haiku-4-5', 'Working on it.')
+    // A turn cap stops Claude before the goal passes: the goal stays open and gains the time.
+    result(
+      'result-1',
+      { subtype: 'error_max_turns', is_error: true, terminal_reason: 'max_turns' },
+      5_000
+    )
+    reply('work-2', 'claude-haiku-4-5', 'done')
+    result('result-2', { subtype: 'success', is_error: false, terminal_reason: 'completed' }, 3_000)
+
+    expect(goals()).toEqual([
+      {
+        identity: { provider: 'claude', sessionId: 'claude-session', uuid: 'goal-set' },
+        body: expect.objectContaining({
+          text: `Goal set: ${OBJECTIVE}`,
+          threadGoal: {
+            state: 'set',
+            goal: expect.objectContaining({
+              objective: OBJECTIVE,
+              status: 'active',
+              timeUsedSeconds: 0
+            })
+          }
+        })
+      },
+      {
+        identity: { provider: 'claude', sessionId: 'claude-session', uuid: 'goal-set' },
+        body: expect.objectContaining({
+          text: `Goal set: ${OBJECTIVE}`,
+          threadGoal: {
+            state: 'set',
+            goal: expect.objectContaining({ status: 'active', timeUsedSeconds: 5 })
+          }
+        })
+      },
+      {
+        identity: { provider: 'claude', sessionId: 'claude-session', uuid: 'result-2:goal' },
+        body: expect.objectContaining({
+          text: `Goal complete: ${OBJECTIVE}`,
+          threadGoal: {
+            state: 'set',
+            goal: expect.objectContaining({ status: 'complete', timeUsedSeconds: 8 })
+          }
+        })
+      }
+    ])
+  })
+
+  it('keeps a goal set before a restart open through a status reply, and clears it on /goal clear', () => {
+    const { reply, result, goals } = goalSink({
+      objective: OBJECTIVE,
+      status: 'active',
+      tokenBudget: null,
+      tokensUsed: 0,
+      timeUsedSeconds: 30,
+      createdAt: 1,
+      updatedAt: 1
+    })
+    // A bare `/goal` runs no model turn, so its clean end says nothing about the goal.
+    reply('status', '<synthetic>', `Goal active: ${OBJECTIVE} (not yet evaluated)`)
+    result('status-result', { subtype: 'success', is_error: false })
+    reply('clear', '<synthetic>', `Goal cleared: ${OBJECTIVE}`)
+
+    expect(goals().map(({ body }) => body.kind === 'status' && body.threadGoal)).toEqual([
+      { state: 'set', goal: expect.objectContaining({ status: 'active', timeUsedSeconds: 30 }) },
+      { state: 'cleared' }
+    ])
+  })
+})
