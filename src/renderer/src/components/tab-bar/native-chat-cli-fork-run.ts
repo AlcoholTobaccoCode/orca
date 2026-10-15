@@ -1,7 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import { toast } from 'sonner'
 import { useAppStore } from '@/store'
-import { translate } from '@/i18n/i18n'
 import { readIpcErrorMessage } from '@/lib/ipc-error'
 import { parseExecutionHostId } from '../../../../shared/execution-host'
 import { waitForPromiseWithSignal } from '../../../../shared/abort-signal-reason'
@@ -15,7 +13,11 @@ import {
   buildAiVaultForkStartupForWorktree
 } from '@/lib/ai-vault-session-fork-startup'
 import { launchAiVaultSessionInNewTab } from '@/lib/launch-ai-vault-session'
-import { notifyAiVaultSessionQueued } from '../right-sidebar/ai-vault-session-launch-feedback'
+import {
+  notifyAiVaultSessionQueued,
+  notifyAiVaultSessionPreparationFailure
+} from '../right-sidebar/ai-vault-session-launch-feedback'
+import { describeAiVaultCliForkFailure } from '../right-sidebar/ai-vault-session-cli-fork'
 import {
   captureWebSessionIntentOwner,
   matchesWebSessionIntentOwner
@@ -155,12 +157,10 @@ export async function runNativeChatCliFork(args: {
     notifyAiVaultSessionQueued(target.agent)
   } catch (error) {
     if (pending.get(key) === controller) {
-      toast.error(
-        translate(
-          'auto.components.right.sidebar.AiVaultPanel.resumeInNewCliFailed',
-          'Could not resume this session in a new CLI.'
-        ),
-        { description: readIpcErrorMessage(error) }
+      notifyAiVaultSessionPreparationFailure(
+        new Error(readIpcErrorMessage(error)),
+        args.agent,
+        describeAiVaultCliForkFailure
       )
     }
   } finally {

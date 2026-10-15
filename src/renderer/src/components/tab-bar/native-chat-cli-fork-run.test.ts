@@ -46,9 +46,9 @@ vi.mock('@/lib/ai-vault-session-fork-startup', () => ({
 }))
 vi.mock('@/lib/launch-ai-vault-session', () => ({ launchAiVaultSessionInNewTab: mocks.launch }))
 vi.mock('../right-sidebar/ai-vault-session-launch-feedback', () => ({
-  notifyAiVaultSessionQueued: mocks.notify
+  notifyAiVaultSessionQueued: mocks.notify,
+  notifyAiVaultSessionPreparationFailure: mocks.error
 }))
-vi.mock('sonner', () => ({ toast: { error: mocks.error } }))
 
 const subject: NativeChatCliForkSubject = {
   kind: 'chat',

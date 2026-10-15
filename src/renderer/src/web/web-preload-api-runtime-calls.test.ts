@@ -148,7 +148,8 @@ describe('web preload runtime calls', () => {
   it('refuses a queued preparation after its initiating pairing is replaced', async () => {
     let release!: () => void
     const blocked = new Promise<RuntimeRpcResponse<unknown>>((resolve) => {
-      release = () => resolve({ id: 'blocked', ok: true, result: null })
+      release = () =>
+        resolve({ id: 'blocked', ok: true, result: null, _meta: { runtimeId: 'runtime-a' } })
     })
     const call = vi.fn(() => blocked)
     vi.doMock('./web-runtime-client', () => ({
