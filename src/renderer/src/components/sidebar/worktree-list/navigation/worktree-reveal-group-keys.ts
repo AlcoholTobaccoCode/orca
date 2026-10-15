@@ -8,21 +8,15 @@ import type { Repo } from '../../../../../../shared/repo-types'
 import type { WorktreeLineage } from '../../../../../../shared/worktree/lineage-types'
 import type { WorkspaceStatusDefinition, Worktree } from '../../../../../../shared/worktree/types'
 import { getHostSectionCollapseKey } from '../../host-section-collapse'
-import {
-  getPinnedSectionWorktrees,
-  getTopVisibleLineageAncestorByIdentity
-} from '../../pinned-section-worktrees'
 import { getWorktreeHostIdentity } from '../../../../../../shared/worktree/host-qualified-identity'
-import {
-  getHostScopedWorktreeLineageInputs,
-  getWorktreeLineageAncestors
-} from '../../worktree-lineage-projection'
-import { getWorktreeLineageGroupKey, PINNED_GROUP_KEY } from '../grouping/group-keys'
+import { getWorktreeLineageGroupKey } from '../grouping/group-keys'
 import type { ProjectGroupingModel } from '../../../../../../shared/project-section-grouping'
+import type { WorktreeOccurrencePlan } from '../../../../../../shared/worktree-occurrence-plan'
 import type { PinnedWorktreeDisplayPolicy, WorktreeGroupBy } from '../grouping/row-types'
-import { getGroupKeysForWorktree } from '../grouping/worktree-group-keys'
+import { buildSidebarRowPlan } from '../grouping/build-rows'
 
 export function getWorktreeRevealCollapsedGroupKeys(args: {
+  occurrencePlan?: WorktreeOccurrencePlan<Worktree>
   worktree: Worktree
   worktrees: readonly Worktree[]
   visibleWorktrees?: readonly Worktree[]
@@ -45,56 +39,45 @@ export function getWorktreeRevealCollapsedGroupKeys(args: {
     args.repoMap.get(args.worktree.repoId),
     args.defaultHostId
   )
-  const hostLineage = getHostScopedWorktreeLineageInputs(
-    args.worktrees,
-    args.worktreeLineageById,
-    hostId
-  )
-  const keys = [
-    `host:${hostId}`,
-    ...getWorktreeLineageAncestors(
-      args.worktree,
-      hostLineage.lineageById,
-      hostLineage.worktreeMap
-    ).map(getWorktreeLineageGroupKey)
-  ]
-  const sectionKey = (key: string) =>
-    args.hostScopedGroups ? getHostSectionCollapseKey(key, hostId) : key
-  const visibleWorktrees = args.visibleWorktrees ?? args.worktrees
-  const pinnedIdentities = new Set(
-    getPinnedSectionWorktrees(
-      visibleWorktrees,
-      hostLineage.lineageById,
-      hostLineage.worktreeMap,
-      args.filterRepoIds
-    ).map(getWorktreeHostIdentity)
-  )
-  if (
-    args.pinnedDisplayPolicy === 'single-location' &&
-    pinnedIdentities.has(getWorktreeHostIdentity(args.worktree))
-  ) {
-    keys.push(sectionKey(PINNED_GROUP_KEY))
-  } else {
-    const naturalWorktrees = args.pinnedDisplayPolicy === 'duplicate-in-groups'
-      ? visibleWorktrees
-      : visibleWorktrees.filter((row) => !pinnedIdentities.has(getWorktreeHostIdentity(row)))
-    const sectionWorktree = args.groupBy === 'repo'
-      ? getTopVisibleLineageAncestorByIdentity(
-          naturalWorktrees, hostLineage.lineageById, hostLineage.worktreeMap
-        ).get(getWorktreeHostIdentity(args.worktree)) ?? args.worktree
-      : args.worktree
-    keys.push(
-      ...getGroupKeysForWorktree(
-        args.groupBy,
-        sectionWorktree,
-        args.repoMap,
-        args.prCache,
-        args.workspaceStatuses,
-        args.settings,
-        args.projectGroups,
-        args.projectGrouping
-      ).map(sectionKey)
-    )
+  const plan = args.occurrencePlan ?? buildSidebarRowPlan(
+    args.groupBy,
+    [...(args.visibleWorktrees ?? args.worktrees)],
+    args.repoMap,
+    args.prCache,
+    new Set(),
+    undefined,
+    args.workspaceStatuses,
+    undefined,
+    { ...args.worktreeLineageById },
+    new Map(args.worktrees.map((row) => [row.id, row])),
+    true,
+    args.settings,
+    args.projectGroups,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    args.projectGrouping,
+    undefined,
+    undefined,
+    args.defaultHostId,
+    args.pinnedDisplayPolicy,
+    args.filterRepoIds
+  ).occurrencePlan
+  const occurrence = plan.preferredByIdentity.get(getWorktreeHostIdentity(args.worktree))
+  if (!occurrence) {
+    return []
+  }
+  const keys = [`host:${hostId}`]
+  let ancestor = occurrence.parent
+  while (ancestor) {
+    keys.push(getWorktreeLineageGroupKey(ancestor.row))
+    ancestor = ancestor.parent
+  }
+  let path: typeof occurrence.sectionPath | undefined = occurrence.sectionPath
+  while (path) {
+    keys.push(args.hostScopedGroups ? getHostSectionCollapseKey(path.key, hostId) : path.key)
+    path = path.parent
   }
   return [...new Set(keys)].filter((key) => args.collapsedGroups.has(key))
 }

@@ -1,7 +1,7 @@
 import {
-  getTopVisibleLineageRoots,
-  getVisibleLineagePlacement
-} from '../../../src/shared/worktree-lineage-placement'
+  buildWorktreeOccurrencePlan,
+  type WorktreeOccurrenceSection
+} from '../../../src/shared/worktree-occurrence-plan'
 import type { WorkspaceStatusDefinition } from '../../../src/shared/worktree/types'
 import {
   DEFAULT_MOBILE_WORKSPACE_STATUSES,
@@ -10,7 +10,7 @@ import {
   getMobileWorkspaceStatusGroupKey
 } from './mobile-workspace-statuses'
 import {
-  applyMobileWorkspaceLineage,
+  getMobileOccurrenceRows,
   getMobileWorkspaceLineageChildren
 } from './mobile-workspace-lineage'
 import { getPRGroupKey, PR_GROUP_LABELS, PR_GROUP_ORDER } from './workspace-pr-status-groups'
@@ -71,20 +71,15 @@ export { CREATE_GRACE_MS, getWorktreeStatus, sortWorktrees } from './workspace-l
 function makeSection(
   key: string,
   title: string,
-  data: Worktree[],
-  collapsedGroups: ReadonlySet<string>,
+  data: readonly Worktree[],
   decoration: { icon?: 'pin'; repo?: SectionRepo } = {}
 ): Section {
-  const rows = applyMobileWorkspaceLineage(data, collapsedGroups)
   return {
     key,
     title,
     ...(decoration.icon ? { icon: decoration.icon } : {}),
     ...(decoration.repo ? { repo: decoration.repo } : {}),
-    data: rows.map((worktree) => ({
-      ...worktree,
-      sectionListKey: `${key}:${getWorktreeRowIdentity(worktree)}`
-    }))
+    data: [...data]
   }
 }
 
@@ -174,7 +169,7 @@ export function isWorktreePinned(w: Worktree, localPins: Set<string>): boolean {
   return w.isPinned || localPins.has(w.worktreeId)
 }
 
-export function buildSections(
+export function buildMobileWorkspacePlan(
   worktrees: Worktree[],
   sortMode: MobileSortMode,
   filters: FilterState,
@@ -183,9 +178,9 @@ export function buildSections(
   pinnedIds: Set<string>,
   projectCatalog: ProjectSectionCatalog = NO_PROJECT_SECTION_CATALOG,
   workspaceStatuses: readonly WorkspaceStatusDefinition[] = DEFAULT_MOBILE_WORKSPACE_STATUSES,
-  collapsedGroups: ReadonlySet<string> = new Set(),
+  _collapsedGroups: ReadonlySet<string> = new Set(),
   showPinnedInGroups = false
-): Section[] {
+) {
   const filtered = filterWorktrees(worktrees, filters, search)
   const sorted = sortWorktrees(filtered, sortMode)
 
@@ -194,125 +189,114 @@ export function buildSections(
       ? worktrees.filter((w) => filters.filterRepoIds.has(w.repoId))
       : worktrees
   )
-  const pinnedIdentities = new Set(
-    getVisibleLineagePlacement(
-      sorted,
-      sorted.filter((w) => isWorktreePinned(w, pinnedIds)),
-      childrenByParentIdentity,
-      getWorktreeRowIdentity,
-      true
-    ).keys()
-  )
-  const isInPinned = (w: Worktree) => pinnedIdentities.has(getWorktreeRowIdentity(w))
-  const pinned = sorted.filter(isInPinned)
-  const canonicalGroupWorktrees = showPinnedInGroups ? sorted : sorted.filter((w) => !isInPinned(w))
+  const repoMap = buildSectionRepoMap(projectCatalog.repos, worktrees)
+  const projectIndex = buildProjectGroupingIndex(projectCatalog.grouping ?? undefined)
+  const occurrencePlan = buildWorktreeOccurrencePlan({
+    rows: sorted,
+    childrenByParentIdentity,
+    identityOf: getWorktreeRowIdentity,
+    isPinned: (worktree) => isWorktreePinned(worktree, pinnedIds),
+    duplicatePinned: showPinnedInGroups,
+    owningSectionOf: (worktree) => getProjectGroupingForRepo(worktree.repoId, repoMap, projectIndex),
+    showProjectContext: groupMode === 'repo',
+    sectionsOf: ({ pinned, natural: canonicalGroupWorktrees, displayRootByIdentity }) => {
+      const sections: Section[] = []
+      if (pinned.length > 0) {
+        sections.push(makeSection('pinned', 'Pinned', pinned, { icon: 'pin' }))
+      }
 
-  const sections: Section[] = []
-  if (pinned.length > 0) {
-    sections.push(makeSection('pinned', 'Pinned', pinned, collapsedGroups, { icon: 'pin' }))
-  }
-
-  if (groupMode === 'none') {
-    if (canonicalGroupWorktrees.length > 0) {
-      sections.push(makeSection('all', 'All', canonicalGroupWorktrees, collapsedGroups))
-    }
-  } else if (groupMode === 'repo') {
-    const displayRootByIdentity = getTopVisibleLineageRoots(
-      canonicalGroupWorktrees,
-      childrenByParentIdentity,
-      getWorktreeRowIdentity
-    )
-    const representedRepoIds = new Set(worktrees.map((w) => w.repoId))
-    const query = search.trim().toLowerCase()
-    const placeholderRepoIds = projectCatalog.repos
-      .filter(
-        (repo) =>
-          !representedRepoIds.has(repo.id) &&
-          (filters.filterRepoIds.size === 0 || filters.filterRepoIds.has(repo.id)) &&
-          (!query || repo.displayName.toLowerCase().includes(query))
-      )
-      .map((repo) => repo.id)
-    const repoMap = buildSectionRepoMap(projectCatalog.repos, worktrees)
-    const projectIndex = buildProjectGroupingIndex(projectCatalog.grouping ?? undefined)
-    // Why: the desktop sidebar's own grouping, so keys, labels and order match it.
-    const projectSections = withRepoSectionDisplayLabels(
-      buildProjectSections({
-        items: canonicalGroupWorktrees,
-        repoIdOf: (w) => w.repoId,
-        displayRepoIdOf: (w) => (displayRootByIdentity.get(getWorktreeRowIdentity(w)) ?? w).repoId,
-        repoMap,
-        projectIndex,
-        placeholderRepoIds,
-        repoOrder: projectCatalog.repoOrder,
-        projectOrderBy: projectCatalog.projectOrderBy
-      })
-    )
-    for (const [key, section] of projectSections) {
-      sections.push(
-        makeSection(
-          key,
-          section.label,
-          orderMainWorktreeFirst(section.items),
-          collapsedGroups,
-          { repo: section.repo }
-        )
-      )
-    }
-    return sections.map((section) => ({
-      ...section,
-      data: section.data.map((w) => {
-        const ownSection = getProjectGroupingForRepo(w.repoId, repoMap, projectIndex)
-        return {
-          ...w,
-          projectContextLabel: ownSection.key !== section.key ? ownSection.label : undefined
+      if (groupMode === 'none') {
+        if (canonicalGroupWorktrees.length > 0) {
+          sections.push(makeSection('all', 'All', canonicalGroupWorktrees))
         }
-      })
-    }))
-  } else if (groupMode === 'workspaceStatus') {
-    const renderableWorkspaceStatuses = coerceMobileWorkspaceStatuses(workspaceStatuses)
-    const byStatus = new Map<string, Worktree[]>()
-    for (const w of canonicalGroupWorktrees) {
-      const key = getMobileWorkspaceStatus(w, renderableWorkspaceStatuses)
-      const list = byStatus.get(key)
-      if (list) {
-        list.push(w)
-      } else {
-        byStatus.set(key, [w])
-      }
-    }
-    for (const status of renderableWorkspaceStatuses) {
-      const items = byStatus.get(status.id)
-      if (items && items.length > 0) {
-        sections.push(
-          makeSection(
-            getMobileWorkspaceStatusGroupKey(status.id),
-            status.label,
-            items,
-            collapsedGroups
+      } else if (groupMode === 'repo') {
+        const representedRepoIds = new Set(worktrees.map((w) => w.repoId))
+        const query = search.trim().toLowerCase()
+        const placeholderRepoIds = projectCatalog.repos
+          .filter(
+            (repo) =>
+              !representedRepoIds.has(repo.id) &&
+              (filters.filterRepoIds.size === 0 || filters.filterRepoIds.has(repo.id)) &&
+              (!query || repo.displayName.toLowerCase().includes(query))
           )
+          .map((repo) => repo.id)
+        // Why: the desktop sidebar's own grouping, so keys, labels and order match it.
+        const projectSections = withRepoSectionDisplayLabels(
+          buildProjectSections({
+            items: canonicalGroupWorktrees,
+            repoIdOf: (w) => w.repoId,
+            displayRepoIdOf: (w) => (displayRootByIdentity.get(getWorktreeRowIdentity(w)) ?? w).repoId,
+            repoMap,
+            projectIndex,
+            placeholderRepoIds,
+            repoOrder: projectCatalog.repoOrder,
+            projectOrderBy: projectCatalog.projectOrderBy
+          })
         )
+        for (const [key, section] of projectSections) {
+          sections.push(
+            makeSection(key, section.label, orderMainWorktreeFirst(section.items), { repo: section.repo })
+          )
+        }
+      } else if (groupMode === 'workspaceStatus') {
+        const renderableWorkspaceStatuses = coerceMobileWorkspaceStatuses(workspaceStatuses)
+        const byStatus = new Map<string, Worktree[]>()
+        for (const w of canonicalGroupWorktrees) {
+          const key = getMobileWorkspaceStatus(w, renderableWorkspaceStatuses)
+          const list = byStatus.get(key)
+          if (list) {
+            list.push(w)
+          } else {
+            byStatus.set(key, [w])
+          }
+        }
+        for (const status of renderableWorkspaceStatuses) {
+          const items = byStatus.get(status.id)
+          if (items && items.length > 0) {
+            sections.push(
+              makeSection(getMobileWorkspaceStatusGroupKey(status.id), status.label, items)
+            )
+          }
+        }
+      } else if (groupMode === 'prStatus') {
+        const byGroup = new Map<string, Worktree[]>()
+        for (const w of canonicalGroupWorktrees) {
+          const key = getPRGroupKey(w)
+          const list = byGroup.get(key)
+          if (list) {
+            list.push(w)
+          } else {
+            byGroup.set(key, [w])
+          }
+        }
+        for (const groupKey of PR_GROUP_ORDER) {
+          const items = byGroup.get(groupKey)
+          if (items && items.length > 0) {
+            sections.push(makeSection(`pr:${groupKey}`, PR_GROUP_LABELS[groupKey], items))
+          }
+        }
       }
-    }
-  } else if (groupMode === 'prStatus') {
-    const byGroup = new Map<string, Worktree[]>()
-    for (const w of canonicalGroupWorktrees) {
-      const key = getPRGroupKey(w)
-      const list = byGroup.get(key)
-      if (list) {
-        list.push(w)
-      } else {
-        byGroup.set(key, [w])
-      }
-    }
-    for (const groupKey of PR_GROUP_ORDER) {
-      const items = byGroup.get(groupKey)
-      if (items && items.length > 0) {
-        sections.push(
-          makeSection(`pr:${groupKey}`, PR_GROUP_LABELS[groupKey], items, collapsedGroups)
-        )
-      }
-    }
-  }
 
-  return sections
+      return sections.map((section): Section & WorktreeOccurrenceSection<Worktree> => ({
+        ...section,
+        items: section.data,
+        placement: section.key === 'pinned' ? 'pinned' : 'natural'
+      }))
+    }
+  })
+  return {
+    occurrencePlan,
+    render: (collapsed: ReadonlySet<string>): Section[] =>
+      occurrencePlan.sections.map((section) => ({
+        key: section.key,
+        title: section.title,
+        ...(section.icon ? { icon: section.icon } : {}),
+        ...(section.repo ? { repo: section.repo } : {}),
+        data: getMobileOccurrenceRows(occurrencePlan, section.key, collapsed)
+      }))
+  }
+}
+
+export function buildSections(...args: Parameters<typeof buildMobileWorkspacePlan>): Section[] {
+  return buildMobileWorkspacePlan(...args).render(args[8] ?? new Set())
 }

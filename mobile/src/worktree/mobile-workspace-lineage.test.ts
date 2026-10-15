@@ -3,7 +3,7 @@ import {
   applyMobileWorkspaceLineage,
   getMobileWorkspaceLineageGroupKey
 } from './mobile-workspace-lineage'
-import { buildSections, NO_PROJECT_SECTION_CATALOG, type Worktree } from './workspace-list-sections'
+import { buildSections, buildMobileWorkspacePlan, NO_PROJECT_SECTION_CATALOG, type Worktree } from './workspace-list-sections'
 
 function worktree(overrides: Partial<Worktree> = {}): Worktree {
   return {
@@ -93,6 +93,33 @@ describe('applyMobileWorkspaceLineage', () => {
         section.data.map((row) => [row.worktreeId, row.repoId, row.lineageDepth])
       ])
     ).toEqual([['repo:repo-2', [['child', 'repo-2', 0]]]])
+  })
+
+  it.each([false, true])('keeps deep project identity in each occurrence (duplicate pins: %s)', (duplicate) => {
+    const parent = worktree({ worktreeId: 'parent', isPinned: true })
+    const child = worktree({
+      worktreeId: 'child', repoId: 'repo-2', repo: 'Backend', parentWorktreeId: parent.worktreeId
+    })
+    const grandchild = { ...child, worktreeId: 'grandchild', parentWorktreeId: child.worktreeId }
+    const filters = { filterRepoIds: new Set<string>(), hideSleeping: false, hideDefaultBranch: false }
+    const plan = buildMobileWorkspacePlan(
+      [grandchild, child, parent], 'name', filters, '', 'repo', new Set(),
+      NO_PROJECT_SECTION_CATALOG, undefined, undefined, duplicate
+    )
+    const collapsed = new Set([getMobileWorkspaceLineageGroupKey(parent)])
+    expect(plan.render(collapsed).flatMap((section) => section.data).map((row) => row.worktreeId))
+      .toEqual(duplicate ? ['parent', 'parent'] : ['parent'])
+    const sections = plan.render(new Set())
+    expect(sections.map((section) => section.data.map((row) => [
+      row.worktreeId, row.lineageDepth, row.projectContextLabel
+    ]))).toEqual([
+      [['parent', 0, 'orca'], ['child', 1, 'Backend'], ['grandchild', 2, 'Backend']],
+      ...(duplicate ? [[['parent', 0, undefined], ['child', 1, 'Backend'], ['grandchild', 2, 'Backend']]] : [])
+    ])
+    const keys = sections.flatMap((section) => section.data.map((row) => row.sectionListKey))
+    expect(new Set(keys).size).toBe(keys.length)
+    const flat = buildSections([parent, child, grandchild], 'name', filters, '', 'none', new Set())
+    expect(flat.flatMap((section) => section.data).every((row) => row.projectContextLabel === undefined)).toBe(true)
   })
 
   it('keeps project recency with the owner and breaks pins at hidden intermediate projects', () => {

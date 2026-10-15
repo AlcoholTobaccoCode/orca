@@ -1,5 +1,5 @@
 import type { Repo } from '../../../../../../shared/repo-types'
-import type { WorktreeLineage } from '../../../../../../shared/worktree/lineage-types'
+import type { WorktreeOccurrencePlan } from '../../../../../../shared/worktree-occurrence-plan'
 import type { WorkspaceStatusDefinition, Worktree } from '../../../../../../shared/worktree/types'
 import type { ExecutionHostId } from '../../../../../../shared/execution-host'
 import {
@@ -30,7 +30,6 @@ import type {
   Row,
   WorktreeGroupBy
 } from './row-types'
-import { orderMainWorktreeFirst } from './section-order'
 
 /** Everything section emission reads that stays fixed for one buildRows call. */
 export type SectionAppendContext = {
@@ -47,11 +46,7 @@ export type SectionAppendContext = {
   pendingByRepo: ReadonlyMap<string, PendingCreationRef[]>
   mixedWorktreeHostContextLabels: Map<string, string> | undefined
   noticeHostContextLabelByRepoId: Map<string, NoticeHostContext> | undefined
-  lineageById: Record<string, WorktreeLineage>
-  worktreeMap: Map<string, Worktree>
-  nestLineage: boolean
-  cyclicLineageIds: ReadonlySet<string>
-  lineageRowsByIdentity: ReadonlyMap<string, Worktree>
+  occurrencePlan: WorktreeOccurrencePlan<Worktree>
 }
 
 export function appendOrderedGroups(
@@ -72,11 +67,7 @@ export function appendOrderedGroups(
     newExternalWorktreesInboxByRepo,
     pendingByRepo,
     mixedWorktreeHostContextLabels,
-    lineageById,
-    worktreeMap,
-    nestLineage,
-    cyclicLineageIds,
-    lineageRowsByIdentity
+    occurrencePlan
   } = ctx
   for (const [key, group] of groupsToAppend) {
     const isCollapsed = collapsedGroups.has(key)
@@ -193,21 +184,16 @@ export function appendOrderedGroups(
           }
         }
       }
-      const items = groupBy === 'repo' ? orderMainWorktreeFirst(group.items) : group.items
       const hostContextLabelByRepoId =
         groupBy === 'repo'
           ? getMixedHostContextLabels(group, repoMap, projectIndex, hostLabelById)
           : undefined
-      appendWorktreeRows(result, items, repoMap, lineageById, worktreeMap, {
-        nestLineage,
+      appendWorktreeRows(result, repoMap, occurrencePlan, {
         collapsedGroups,
         groupDepth: projectGroupDepth,
         sectionKey: key,
         hostContextLabelByRepoId,
-        hostContextLabelByWorktreeIdentity: mixedWorktreeHostContextLabels,
-        projectIndex,
-        lineageRowsByIdentity,
-        cyclicLineageIds
+        hostContextLabelByWorktreeIdentity: mixedWorktreeHostContextLabels
       })
       for (const pair of folderPairs) {
         result.push(buildFolderWorkspaceRow(pair, projectGroupDepth))

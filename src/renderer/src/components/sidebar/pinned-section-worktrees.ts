@@ -1,10 +1,7 @@
 import type { WorktreeLineage } from '../../../../shared/worktree/lineage-types'
 import type { Worktree } from '../../../../shared/worktree/types'
 import { getWorktreeHostIdentity } from '../../../../shared/worktree/host-qualified-identity'
-import {
-  getTopVisibleLineageRoots,
-  getVisibleLineagePlacement
-} from '../../../../shared/worktree-lineage-placement'
+import { getLineagePlacementRows } from '../../../../shared/worktree-occurrence-plan'
 import {
   getCyclicProjectedWorktreeLineageIds,
   getSidebarLineageParent
@@ -22,7 +19,7 @@ export function getSidebarLineageRowsByIdentity(
   )
 }
 
-function getSidebarLineageChildren(
+export function getSidebarLineageChildren(
   worktrees: readonly Worktree[],
   lineageById: Readonly<Record<string, WorktreeLineage>>,
   worktreeMap: ReadonlyMap<string, Worktree>,
@@ -48,19 +45,6 @@ function getSidebarLineageChildren(
   return childrenByParentIdentity
 }
 
-/** A displayed row follows the highest ancestor that is also displayed. */
-export function getTopVisibleLineageAncestorByIdentity(
-  worktrees: readonly Worktree[],
-  lineageById: Readonly<Record<string, WorktreeLineage>>,
-  worktreeMap: ReadonlyMap<string, Worktree>
-): Map<string, Worktree> {
-  return getTopVisibleLineageRoots(
-    worktrees,
-    getSidebarLineageChildren(worktrees, lineageById, worktreeMap),
-    getWorktreeHostIdentity
-  )
-}
-
 // Why: pin is placement of the clicked row. Descendants keep their own isPinned
 // and still follow a visible pinned ancestor into the Pinned section.
 export function getPinnedSectionWorktrees(
@@ -69,14 +53,15 @@ export function getPinnedSectionWorktrees(
   worktreeMap: ReadonlyMap<string, Worktree>,
   filterRepoIds: readonly string[] = []
 ): Worktree[] {
-  const placement = getVisibleLineagePlacement(
-    worktrees,
-    worktrees.filter((worktree) => worktree.isPinned),
-    getSidebarLineageChildren(worktrees, lineageById, worktreeMap, filterRepoIds),
-    getWorktreeHostIdentity,
-    true
-  )
-  return worktrees.filter((worktree) => placement.has(getWorktreeHostIdentity(worktree)))
+  return getLineagePlacementRows({
+    rows: worktrees,
+    isPinned: (worktree) => worktree.isPinned === true,
+    childrenByParentIdentity: getSidebarLineageChildren(
+      worktrees, lineageById, worktreeMap, filterRepoIds
+    ),
+    identityOf: getWorktreeHostIdentity,
+    duplicatePinned: false
+  }).pinned
 }
 
 export function isPinnedSectionWorktree(

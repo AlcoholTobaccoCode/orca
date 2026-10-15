@@ -3,7 +3,7 @@ import type { WorkspaceStatusDefinition } from '../../../src/shared/worktree/typ
 import type { MobileGroupMode, MobileSortMode } from './workspace-view-settings'
 import {
   buildSectionRepoMap,
-  buildSections,
+  buildMobileWorkspacePlan,
   type FilterState,
   type ProjectSectionCatalog,
   type Section,
@@ -56,9 +56,9 @@ export function useWorkspaceSections(args: {
     [projectCatalog.repos, displayWorktrees]
   )
 
-  const rawSections = useMemo(
+  const plan = useMemo(
     () =>
-      buildSections(
+      buildMobileWorkspacePlan(
         displayWorktrees,
         sortMode,
         filters,
@@ -67,7 +67,7 @@ export function useWorkspaceSections(args: {
         pinnedIds,
         projectCatalog,
         workspaceStatuses,
-        collapsedGroups,
+        undefined,
         showPinnedInGroups
       ),
     [
@@ -79,11 +79,11 @@ export function useWorkspaceSections(args: {
       pinnedIds,
       projectCatalog,
       workspaceStatuses,
-      collapsedGroups,
       showPinnedInGroups
     ]
   )
 
+  const rawSections = useMemo(() => plan.render(collapsedGroups), [plan, collapsedGroups])
   const sections = useMemo(
     () =>
       rawSections.map((s) => ({

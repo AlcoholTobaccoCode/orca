@@ -195,7 +195,26 @@ export function getProjectHeaderRevealTarget(
   return getProjectGroupingForRepo(repoId, repoMap, buildProjectGroupingIndex(projectGrouping))
 }
 
-/** Files `item` under its repo's project section, opening the section on first sight. */
+/** Actual membership, independent of where a lineage occurrence is displayed. */
+export function buildProjectOwnershipIndex<Item, R extends ProjectSectionRepo>(args: {
+  items: readonly Item[]
+  repoIdOf: (item: Item) => string
+  repoMap: ReadonlyMap<string, R>
+  projectIndex: ProjectGroupingIndex | null
+}): Map<string, { items: Item[]; repoIds: Set<string> }> {
+  const ownership = new Map<string, { items: Item[]; repoIds: Set<string> }>()
+  for (const item of args.items) {
+    const repoId = args.repoIdOf(item)
+    const key = getProjectGroupingForRepo(repoId, args.repoMap, args.projectIndex).key
+    const entry = ownership.get(key) ?? { items: [], repoIds: new Set<string>() }
+    entry.items.push(item)
+    entry.repoIds.add(repoId)
+    ownership.set(key, entry)
+  }
+  return ownership
+}
+
+/** Files `item` under its displayed project section. */
 function addItemToProjectSection<Item, R extends ProjectSectionRepo>(
   sections: Map<string, ProjectSectionEntry<Item, R>>,
   item: Item,
@@ -263,13 +282,9 @@ export function buildProjectSections<
 }): [string, ProjectSectionEntry<Item, R>][] {
   const { repoMap, projectIndex } = args
   const sections = new Map<string, ProjectSectionEntry<Item, R>>()
-  const activityBySection = new Map<string, Item[]>()
+  const ownership = buildProjectOwnershipIndex(args)
   for (const item of args.items) {
     const repoId = args.repoIdOf(item)
-    const key = getProjectGroupingForRepo(repoId, repoMap, projectIndex).key
-    const activity = activityBySection.get(key) ?? []
-    activity.push(item)
-    activityBySection.set(key, activity)
     addItemToProjectSection(
       sections, item, args.displayRepoIdOf?.(item) ?? repoId, repoMap, projectIndex
     )
@@ -290,7 +305,7 @@ export function buildProjectSections<
     ensureProjectSectionForRepo(sections, repoId, repoMap, projectIndex)
   }
   for (const [key, section] of sections) {
-    section.activityItems = activityBySection.get(key) ?? []
+    section.activityItems = ownership.get(key)?.items ?? []
   }
   return orderProjectSections(sections, repoMap, args.repoOrder, args.projectOrderBy)
 }

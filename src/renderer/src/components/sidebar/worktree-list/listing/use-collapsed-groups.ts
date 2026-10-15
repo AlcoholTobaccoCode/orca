@@ -1,4 +1,5 @@
 import { useMemo } from 'react'
+import type { WorktreeOccurrencePlan } from '../../../../../../shared/worktree-occurrence-plan'
 import { getWorktreeRevealCollapsedGroupKeys } from '../navigation/worktree-reveal-group-keys'
 import type { AppState } from '@/store/types'
 import type { ProjectGroup } from '../../../../../../shared/project-group-types'
@@ -13,6 +14,7 @@ import type { ExecutionHostId } from '../../../../../../shared/execution-host'
 
 // While the agent send picker targets a workspace, force open every section that hides it.
 export function useEffectiveCollapsedGroups(args: {
+  occurrencePlan?: WorktreeOccurrencePlan<Worktree>
   hostScopedGroups?: boolean
   collapsedGroups: Set<string>
   agentSendTargetWorktreeId: string | null
@@ -33,6 +35,7 @@ export function useEffectiveCollapsedGroups(args: {
   defaultHostId: ExecutionHostId
 }): Set<string> {
   const {
+    occurrencePlan,
     collapsedGroups,
     hostScopedGroups = false,
     agentSendTargetWorktreeId,
@@ -77,6 +80,7 @@ export function useEffectiveCollapsedGroups(args: {
     }
     const next = new Set(collapsedGroups)
     for (const groupKey of getWorktreeRevealCollapsedGroupKeys({
+      occurrencePlan,
       worktree: targetWorktree,
       worktrees,
       visibleWorktrees,
@@ -99,6 +103,7 @@ export function useEffectiveCollapsedGroups(args: {
     return next
   }, [
     agentSendTargetWorktreeId,
+    occurrencePlan,
     collapsedGroups,
     hostScopedGroups,
     groupBy,

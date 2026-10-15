@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import type { WorktreeLineage } from '../../../../../../shared/worktree/lineage-types'
+import { getWorktreeHostIdentity } from '../../../../../../shared/worktree/host-qualified-identity'
 import type { Worktree } from '../../../../../../shared/worktree/types'
 import { repo, worktree, project, projectHostSetups } from '../../worktree-list-groups-test-fixtures'
 import { makeProjectGroup } from '../../folder-workspace-composer-submit-fixtures'
 import { getWorktreeRevealCollapsedGroupKeys } from '../navigation/worktree-reveal-group-keys'
-import { buildRows } from './build-rows'
+import { buildRows, buildSidebarRowPlan } from './build-rows'
+import { getWorktreeLineageGroupKey, getProjectGroupHeaderKey, PINNED_GROUP_KEY } from './group-keys'
 
 const childRepo = { ...repo, id: 'child-repo', displayName: 'Child project', path: '/tmp/child' }
 const repos = new Map([
@@ -79,25 +81,63 @@ describe('cross-project sidebar lineage', () => {
   })
 
   it.each(['single-location', 'duplicate-in-groups'] as const)(
-    'reveals the displayed ancestor section and its custom project groups (%s)',
-    (pinnedDisplayPolicy) => {
+    'reveals the recorded deep occurrence without changing its owner (%s)',
+    (policy) => {
       const group = makeProjectGroup()
       const parentRepo = { ...repo, projectGroupId: group.id }
-      const shownParent = { ...parent, isPinned: pinnedDisplayPolicy === 'duplicate-in-groups' }
-      const collapsedGroups = new Set([
-        `repo:${repo.id}`, `repo:${childRepo.id}`, `project-group:${group.id}`,
-        'workspace-lineage:parent'
-      ])
-      const keys = getWorktreeRevealCollapsedGroupKeys({
-        worktree: child, worktrees: [shownParent, child], worktreeLineageById: lineageById,
-        repoMap: new Map([...repos, [repo.id, parentRepo]]), defaultHostId: 'local',
-        hostScopedGroups: false, collapsedGroups, groupBy: 'repo', pinnedDisplayPolicy,
-        prCache: null, workspaceStatuses: [], settings: null, projectGroups: [group]
+      const repoMap = new Map([...repos, [repo.id, parentRepo]])
+      const pinnedParent = { ...parent, isPinned: true }
+      const grandchild = { ...child, id: 'grandchild', instanceId: 'grandchild-instance' }
+      const graph = {
+        ...lineageById,
+        [grandchild.id]: {
+          ...lineage, worktreeId: grandchild.id, worktreeInstanceId: grandchild.instanceId,
+          parentWorktreeId: child.id, parentWorktreeInstanceId: 'child-instance'
+        }
+      }
+      const worktrees = [grandchild, child, pinnedParent]
+      const plan = buildSidebarRowPlan(
+        'repo', worktrees, repoMap, null, new Set(), undefined, undefined, undefined,
+        graph, new Map(worktrees.map((row) => [row.id, row])), true,
+        undefined, [group], undefined, undefined, undefined, undefined, undefined,
+        undefined, undefined, 'local', policy
+      )
+      const occurrence = plan.occurrencePlan.preferredByIdentity.get(getWorktreeHostIdentity(grandchild))
+      expect(occurrence).toMatchObject({
+        row: { repoId: childRepo.id }, depth: 2, projectContextLabel: childRepo.displayName,
+        sectionKey: policy === 'single-location' ? PINNED_GROUP_KEY : `repo:${repo.id}`
       })
-      expect(keys).toEqual(expect.arrayContaining([
-        `repo:${repo.id}`, `project-group:${group.id}`, 'workspace-lineage:parent'
-      ]))
-      expect(keys).not.toContain(`repo:${childRepo.id}`)
+      expect(occurrence?.parent?.row).toBe(child)
+      const collapsedGroups = new Set([
+        PINNED_GROUP_KEY, `repo:${repo.id}`, getProjectGroupHeaderKey(group.id),
+        getWorktreeLineageGroupKey(parent), getWorktreeLineageGroupKey(child)
+      ])
+      expect(plan.render(collapsedGroups).some((row) => row.type === 'item')).toBe(false)
+      const keys = getWorktreeRevealCollapsedGroupKeys({
+        occurrencePlan: plan.occurrencePlan,
+        worktree: grandchild, worktrees, worktreeLineageById: graph, repoMap,
+        defaultHostId: 'local', hostScopedGroups: false, collapsedGroups, groupBy: 'repo',
+        pinnedDisplayPolicy: policy, prCache: null, workspaceStatuses: [], settings: null,
+        projectGroups: [group]
+      })
+      for (const key of keys) collapsedGroups.delete(key)
+      const rendered = plan.render(collapsedGroups).filter((row) => row.type === 'item')
+      expect(rendered.map((row) => row.worktree.id)).toEqual([parent.id, child.id, grandchild.id])
+      expect(rendered[2]?.occurrence).toBe(occurrence)
+      expect(rendered.slice(1).map((row) => row.projectContextLabel))
+        .toEqual([childRepo.displayName, childRepo.displayName])
+    }
+  )
+
+  it.each(['none', 'workspace-status', 'pr-status'] as const)(
+    'leaves the ordinary owner identity as the only project name in %s',
+    (mode) => {
+      const rows = buildRows(
+        mode, [parent, child], repos, null, new Set(), undefined, undefined, undefined,
+        lineageById, worktreeMap, true
+      )
+      expect(rows.filter((row) => row.type === 'item').map((row) => row.projectContextLabel))
+        .toEqual([undefined, undefined])
     }
   )
 
@@ -163,7 +203,7 @@ describe('cross-project sidebar lineage', () => {
         worktree: child,
         sectionKey: `repo:${childRepo.id}`,
         depth: 0,
-        projectContextLabel: childRepo.displayName
+        projectContextLabel: undefined
       }
     ])
   })
