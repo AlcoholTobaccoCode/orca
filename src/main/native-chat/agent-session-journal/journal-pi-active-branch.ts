@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { performance } from 'node:perf_hooks'
 import type { AgentJournalItemIdentity } from '../../../shared/agent-session-journal-types'
 import type { NativeChatMessage } from '../../../shared/native-chat-types'
 import { asRecord, parseJsonObject, timestampMs } from '../../ai-vault/session-scanner-values'
@@ -40,6 +41,7 @@ export function createPiTranscriptCollector<T>(
         line_index INTEGER NOT NULL,
         branch_depth INTEGER
       );
+      CREATE INDEX entries_branch_depth ON entries(branch_depth) WHERE branch_depth IS NOT NULL;
     `)
     insert = db.prepare(`INSERT INTO entries
       (id, file_index, parent_id, type, first_kept_id, raw_line, fallback_id, line_index)
@@ -149,7 +151,9 @@ export function createPiTranscriptCollector<T>(
         WHERE branch_depth IS NOT NULL AND branch_depth >= ? AND branch_depth <= ?
         ORDER BY branch_depth DESC`)
       const emit = async (from: number, through: number): Promise<void> => {
-        let emitted = 0
+        let processedRows = 0
+        let processedBytes = 0
+        let sliceStartedAt = performance.now()
         for (const row of selected.iterate(from, through)) {
           if (
             typeof row.raw_line !== 'string' ||
@@ -158,22 +162,29 @@ export function createPiTranscriptCollector<T>(
           ) {
             throw new Error('Pi session branch index is unreadable')
           }
+          processedRows += 1
+          processedBytes += Buffer.byteLength(row.raw_line, 'utf8')
           const record = parseJsonObject(row.raw_line)
-          if (!record) {
-            continue
+          if (record) {
+            const message =
+              record.type === 'compaction' || record.type === 'branch_summary'
+                ? piSummaryMessage(record, row.fallback_id)
+                : asRecord(record.message)?.role === 'system'
+                  ? null
+                  : decodeOmpTranscriptLine(row.raw_line, row.fallback_id)
+            if (message) {
+              keep(toItem(message, identify(row.raw_line, row.line_index)))
+            }
           }
-          const message =
-            record.type === 'compaction' || record.type === 'branch_summary'
-              ? piSummaryMessage(record, row.fallback_id)
-              : asRecord(record.message)?.role === 'system'
-                ? null
-                : decodeOmpTranscriptLine(row.raw_line, row.fallback_id)
-          if (message) {
-            keep(toItem(message, identify(row.raw_line, row.line_index)))
-          }
-          emitted += 1
-          if (emitted % 256 === 0) {
+          if (
+            processedBytes >= 1024 * 1024 ||
+            performance.now() - sliceStartedAt >= 8 ||
+            processedRows >= 256
+          ) {
             await new Promise<void>((resolve) => setImmediate(resolve))
+            processedRows = 0
+            processedBytes = 0
+            sliceStartedAt = performance.now()
           }
         }
       }

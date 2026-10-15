@@ -7,6 +7,7 @@ import {
   prepareLegacyTranscriptImport
 } from './journal-legacy-import'
 import { createTrackedJournalOpener } from './journal-host-database-test-support'
+import { createPiTranscriptCollector } from './journal-pi-active-branch'
 import { PI_CONTEXT_FIXTURES } from './journal-pi-context-fixtures'
 
 let root: string
@@ -41,6 +42,48 @@ async function prepare(entries: unknown[], version = 3) {
 }
 
 describe('saved Pi context import', () => {
+  it('lets the event loop run while projecting a large active branch', async () => {
+    const collector = createPiTranscriptCollector(
+      (message) => message.id,
+      (_line, lineIndex) => ({
+        provider: 'legacy',
+        agent: 'pi',
+        sessionId: 'session',
+        recordId: `active-${lineIndex}`
+      })
+    )
+    const selected: string[] = []
+    let markerAt = -1
+    try {
+      collector.record(JSON.stringify({ type: 'session', version: 3 }), 'session', 0)
+      for (let index = 0; index < 12; index += 1) {
+        collector.record(
+          JSON.stringify({
+            type: 'message',
+            id: `active-${index}`,
+            parentId: index === 0 ? null : `active-${index - 1}`,
+            message: { role: 'user', content: 'x'.repeat(128 * 1024) }
+          }),
+          `active-${index}`,
+          index + 1
+        )
+      }
+      const marker = new Promise<void>((resolve) =>
+        setImmediate(() => {
+          markerAt = selected.length
+          resolve()
+        })
+      )
+      await collector.project((id) => selected.push(id))
+      await marker
+      expect(selected).toEqual(Array.from({ length: 12 }, (_, index) => `active-${index}`))
+      expect(markerAt).toBeGreaterThanOrEqual(0)
+      expect(markerAt).toBeLessThan(12)
+    } finally {
+      collector.close()
+    }
+  })
+
   it.each(PI_CONTEXT_FIXTURES)('$name', async (fixture) => {
     const items = await prepare(fixture.entries, 'version' in fixture ? fixture.version : 3)
     expect(
