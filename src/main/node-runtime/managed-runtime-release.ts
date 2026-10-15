@@ -3,7 +3,7 @@
 // cheap enough for every launch: a full hash is only ever taken by an install.
 
 import { lstatSync, readFileSync, readdirSync } from 'node:fs'
-import { readdir, rm } from 'node:fs/promises'
+import { readdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { z } from 'zod'
 
@@ -75,6 +75,22 @@ export function resolveInstalledRuntimeRelease(
   return chosen
     ? { folder: join(root, chosen.name), version: chosen.name, current: chosen === pinned }
     : null
+}
+
+/** Written into a verified release before it is renamed into place: the release is whole once the
+ *  rename lands, so a folder with this receipt was never published partly. */
+export async function writeRuntimeReleaseReceipt(
+  folder: string,
+  pin: ManagedRuntimePin
+): Promise<void> {
+  const receipt: z.infer<typeof runtimeReleaseReceiptSchema> = {
+    releaseId: pin.archiveSha256,
+    version: pin.version,
+    platform: process.platform,
+    arch: process.arch,
+    members: pin.members.map(({ path, bytes }) => ({ path, bytes }))
+  }
+  await writeFile(join(folder, RUNTIME_RELEASE_RECEIPT), JSON.stringify(receipt), { flag: 'wx' })
 }
 
 /** Removes everything under `root` but the release named `keep`: called only while the caller
