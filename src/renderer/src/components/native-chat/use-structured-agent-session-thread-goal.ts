@@ -23,7 +23,7 @@ export type StructuredAgentSessionThreadGoal = {
 
 const CLEAR_GOAL_COMMAND = '/goal clear'
 
-/** Null unless the host can change this session's goal or its journal records one. */
+/** Null unless the host advertises goal changes or goal reports for this session. */
 export function useStructuredAgentSessionThreadGoal(args: {
   journalItems: readonly AgentJournalRenderItem[]
   support: AgentSessionOptionsResult['threadGoal']
@@ -73,7 +73,7 @@ export function useStructuredAgentSessionThreadGoal(args: {
     },
     [hostChanges, mutate, send]
   )
-  if (!hostChanges && goal === null) {
+  if (report === undefined || (!hostChanges && goal === null)) {
     return null
   }
   return { goal, pending, hostChanges, change }

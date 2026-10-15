@@ -7,6 +7,7 @@ import type {
   AgentJournalAcceptanceReceipt,
   AgentJournalCursor,
   AgentJournalItemBody,
+  AgentJournalItemIdentity,
   AgentJournalRenderItem,
   AgentJournalSnapshot,
   AgentJournalSubmission,

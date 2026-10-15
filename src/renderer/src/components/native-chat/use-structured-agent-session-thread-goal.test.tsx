@@ -74,6 +74,11 @@ function harness(options: {
 }
 
 describe('useStructuredAgentSessionThreadGoal', () => {
+  it('does not show a persisted goal when the host advertises neither goal field', () => {
+    const fromWindow = harness({ journalItems: [goalRow(1, GOAL)] })
+    expect(fromWindow.result.current).toBeNull()
+  })
+
   it('shows a goal only the agent changes, which clears by sending it /goal clear', async () => {
     expect(harness({}).result.current).toBeNull()
 
