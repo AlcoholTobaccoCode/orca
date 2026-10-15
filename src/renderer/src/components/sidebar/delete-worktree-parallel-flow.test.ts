@@ -256,22 +256,37 @@ describe('runWorktreeDeletesInParallel', () => {
     expect(mocks.state.removeWorktree).toHaveBeenCalledTimes(2)
   })
 
-  it('waits for a nested child from another repository before deleting its parent', async () => {
+  it.each([undefined, 'ssh:builder'] as const)('orders nested deletes on %s', async (hostId) => {
     const child = deferredDeleteResult()
     mocks.state.removeWorktree.mockImplementationOnce(() => child.promise)
 
-    const deleted = runDeletesForCurrentWorktrees([
-      { id: 'parent', displayName: 'parent', repoId: 'repo-a', path: '/workspaces/parent' },
-      { id: 'child', displayName: 'child', repoId: 'repo-b', path: '/workspaces/parent/child' }
-    ])
+    const deleted = runDeletesForCurrentWorktrees(
+      [
+        { id: 'parent', displayName: 'parent', repoId: 'repo-a', path: '/workspaces/parent' },
+        { id: 'child', displayName: 'child', repoId: 'repo-b', path: '/workspaces/parent/child' },
+        { id: 'independent', displayName: 'independent', repoId: 'repo-c', path: '/apart' }
+      ].map((target) => ({ ...target, hostId }))
+    )
 
-    await vi.waitFor(() => expect(mocks.state.removeWorktree).toHaveBeenCalledTimes(1))
-    await Promise.resolve()
-    await Promise.resolve()
-    expect(mocks.state.removeWorktree).toHaveBeenCalledTimes(1)
-    child.resolve({ ok: true })
-    await expect(deleted).resolves.toHaveLength(2)
     expect(mocks.state.removeWorktree).toHaveBeenCalledTimes(2)
+    expect(mocks.state.removeWorktree.mock.calls.map(([target]) => target)).toEqual([
+      { id: 'child', executionHostId: hostId ?? null },
+      { id: 'independent', executionHostId: hostId ?? null }
+    ])
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(mocks.state.removeWorktree).toHaveBeenCalledTimes(2)
+    child.resolve({ ok: true })
+    await expect(deleted).resolves.toEqual([
+      { id: 'parent', executionHostId: hostId ?? null },
+      { id: 'child', executionHostId: hostId ?? null },
+      { id: 'independent', executionHostId: hostId ?? null }
+    ])
+    expect(mocks.state.removeWorktree).toHaveBeenLastCalledWith(
+      { id: 'parent', executionHostId: hostId ?? null },
+      false,
+      { suppressPreservedBranchToast: true }
+    )
   })
 
   it('passes confirmed force to each delete', async () => {
