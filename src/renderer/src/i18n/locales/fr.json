@@ -14212,12 +14212,10 @@
             "fileCount_other": "{{value0}} fichiers",
             "databaseCount_one": "{{value0}} base de données",
             "databaseCount_other": "{{value0}} bases de données",
-            "agentCount_one": "{{value0}} agent",
-            "agentCount_other": "{{value0}} agents",
             "scanning": "Analyse de {{value0}}",
             "reading": "Lecture de {{value0}} fichiers",
             "stoppedAfter": "Arrêté après {{value0}}",
-            "scanned": "{{value0}} analysés · {{value1}}",
+            "scanned": "{{value0}} analysés",
             "stoppedAt": "arrêté à {{value0}}",
             "refresh": "Actualiser"
           }

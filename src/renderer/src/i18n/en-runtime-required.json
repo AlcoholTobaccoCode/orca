@@ -715,8 +715,6 @@
             "worktreeScope": "Worktree"
           },
           "AiVaultScanProgressStrip": {
-            "agentCount_one": "{{value0}} agent",
-            "agentCount_other": "{{value0}} agents",
             "databaseCount_one": "{{value0}} database",
             "databaseCount_other": "{{value0}} databases",
             "fileCount_one": "{{value0}} file",

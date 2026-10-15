@@ -14104,12 +14104,10 @@
             "fileCount_other": "{{value0}} archivos",
             "databaseCount_one": "{{value0}} base de datos",
             "databaseCount_other": "{{value0}} bases de datos",
-            "agentCount_one": "{{value0}} agente",
-            "agentCount_other": "{{value0}} agentes",
             "scanning": "Analizando {{value0}}",
             "reading": "Leyendo {{value0}} archivos",
             "stoppedAfter": "Detenido tras {{value0}}",
-            "scanned": "Analizados {{value0}} · {{value1}}",
+            "scanned": "Analizados {{value0}}",
             "stoppedAt": "detenido en {{value0}}",
             "refresh": "Actualizar"
           }

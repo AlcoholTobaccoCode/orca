@@ -14362,12 +14362,10 @@
             "fileCount_other": "{{value0}} files",
             "databaseCount_one": "{{value0}} database",
             "databaseCount_other": "{{value0}} databases",
-            "agentCount_one": "{{value0}} agent",
-            "agentCount_other": "{{value0}} agents",
             "scanning": "Scanning {{value0}}",
             "reading": "Reading {{value0}} files",
             "stoppedAfter": "Stopped after {{value0}}",
-            "scanned": "Scanned {{value0}} · {{value1}}",
+            "scanned": "Scanned {{value0}}",
             "stoppedAt": "stopped at {{value0}}",
             "refresh": "Refresh"
           }

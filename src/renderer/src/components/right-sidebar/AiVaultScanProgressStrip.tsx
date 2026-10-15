@@ -52,21 +52,6 @@ function databaseCountLabel(count: number): string {
       )
 }
 
-function agentCountLabel(count: number): string {
-  const value0 = formatCount(count)
-  return count === 1
-    ? translate(
-        'auto.components.right.sidebar.AiVaultScanProgressStrip.agentCount_one',
-        '{{value0}} agent',
-        { value0 }
-      )
-    : translate(
-        'auto.components.right.sidebar.AiVaultScanProgressStrip.agentCount_other',
-        '{{value0}} agents',
-        { value0 }
-      )
-}
-
 function stripSentence(progress: AiVaultScanProgress): string {
   const value0 = EMPHASIS_TOKEN
   switch (progress.stage) {
@@ -91,11 +76,8 @@ function stripSentence(progress: AiVaultScanProgress): string {
     case 'finished':
       return translate(
         'auto.components.right.sidebar.AiVaultScanProgressStrip.scanned',
-        'Scanned {{value0}} · {{value1}}',
-        {
-          value0,
-          value1: agentCountLabel(progress.agents.filter((agent) => foundCount(agent) > 0).length)
-        }
+        'Scanned {{value0}}',
+        { value0 }
       )
   }
 }
