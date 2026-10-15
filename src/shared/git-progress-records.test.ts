@@ -9,32 +9,10 @@ const GIT_2_25_5_CHUNKS: string[] = [
   'Updating files:  44% (11/25)\r',
   'Updating files:  48% (12/25)\rUpdating files:  52% (13/25)\rUpdating files:  56% (14/25)\rUpdating files:  60% (15/25)\rUpdating files:  64% (16/25)\rUpdating files:  68% (17/25)\rUpdating files:  72% (18/25)\rUpdating files:  76% (19/25)\rUpdating files:  80% (20/25)\rUpdating files:  84% (21/25)\rUpdating files:  88% (22/25)\rUpdating files:  92% (23/25)\rUpdating files:  96% (24/25)\rUpdating files: 100% (25/25)\rUpdating files: 100% (25/25), done.\n'
 ]
-// Same capture with COLUMNS=20: git prints the title once, then bare counters.
+// Same capture with COLUMNS=20 (pipe chunks merged): git prints the title once, then bare counters.
 const GIT_2_25_5_NARROW_CHUNKS: string[] = [
   'Updating files:     \n    4% (1/25)\r',
-  '    8% (2/25)\r',
-  '   12% (3/25)\r',
-  '   16% (4/25)\r',
-  '   20% (5/25)\r',
-  '   24% (6/25)\r',
-  '   28% (7/25)\r',
-  '   32% (8/25)\r',
-  '   36% (9/25)\r',
-  '   40% (10/25)\r',
-  '   44% (11/25)\r',
-  '   48% (12/25)\r',
-  '   52% (13/25)\r',
-  '   56% (14/25)\r',
-  '   60% (15/25)\r',
-  '   64% (16/25)\r',
-  '   68% (17/25)\r',
-  '   72% (18/25)\r',
-  '   76% (19/25)\r',
-  '   80% (20/25)\r',
-  '   84% (21/25)\r',
-  '   88% (22/25)\r',
-  '   92% (23/25)\r',
-  '   96% (24/25)\r  100% (25/25)\r',
+  '    8% (2/25)\r   12% (3/25)\r   16% (4/25)\r   20% (5/25)\r   24% (6/25)\r   28% (7/25)\r   32% (8/25)\r   36% (9/25)\r   40% (10/25)\r   44% (11/25)\r   48% (12/25)\r   52% (13/25)\r   56% (14/25)\r   60% (15/25)\r   64% (16/25)\r   68% (17/25)\r   72% (18/25)\r   76% (19/25)\r   80% (20/25)\r   84% (21/25)\r   88% (22/25)\r   92% (23/25)\r   96% (24/25)\r  100% (25/25)\r',
   '  100% (25/25), done.\n'
 ]
 
