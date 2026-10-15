@@ -75,7 +75,11 @@ export function journalClaudeResult(
     streamedBlocks.clear()
     streamedText.settle()
   }
-  const goal = threadGoal.settle(message, backgroundTasks.running, observedAt)
+  const goal = threadGoal.settle(
+    message,
+    { backgroundWorkRunning: backgroundTasks.running, stoppedByPerson: leftToStop },
+    observedAt
+  )
   if (goal) {
     sink.appendItem(goal.identity, goal.body, { turnScope: endedTurnScope })
     sink.publish()

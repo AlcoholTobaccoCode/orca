@@ -13,10 +13,12 @@ const OBJECTIVE = 'reply with exactly the word done'
 
 function goalSink(journalGoal: AgentJournalThreadGoal | null = null) {
   const rows: { identity: AgentJournalItemIdentity; body: AgentJournalItemBody }[] = []
+  let stopped = false
   const sink: StructuredAgentSessionEventSink = {
     appendItem: (identity, body) => rows.push({ identity, body }),
     appendTombstone: vi.fn(),
     publish: vi.fn(),
+    journalStopDecidesTurn: () => stopped,
     journalLinkage: () => ({
       epoch: 'test',
       visitItemsWithLinkage: () => {},
@@ -46,7 +48,10 @@ function goalSink(journalGoal: AgentJournalThreadGoal | null = null) {
     rows.flatMap(({ identity, body }) =>
       body.kind === 'status' && body.threadGoal ? [{ identity, body }] : []
     )
-  return { reply, result, goals }
+  const pressStop = () => {
+    stopped = true
+  }
+  return { reply, result, goals, pressStop }
 }
 
 describe('Claude /goal journaling', () => {
@@ -99,6 +104,21 @@ describe('Claude /goal journaling', () => {
         })
       }
     ])
+  })
+
+  // Seen live: a Stop pressed while Claude ran the goal's check ended the turn with a clean result.
+  it('keeps the goal open when a person stops the turn, even on a clean result', () => {
+    const { reply, result, goals, pressStop } = goalSink()
+    reply('goal-set', '<synthetic>', `Goal set: ${OBJECTIVE}`)
+    reply('work', 'claude-opus-5-5', 'Still waiting.')
+    pressStop()
+    result('result', { subtype: 'success', is_error: false, terminal_reason: 'completed' })
+
+    expect(goals().map(({ body }) => body.kind === 'status' && body.text)).toEqual([
+      `Goal set: ${OBJECTIVE}`,
+      `Goal set: ${OBJECTIVE}`
+    ])
+    expect(goals().at(-1)?.body).toMatchObject({ threadGoal: { goal: { status: 'active' } } })
   })
 
   it('keeps a goal set before a restart open through a status reply, and clears it on /goal clear', () => {

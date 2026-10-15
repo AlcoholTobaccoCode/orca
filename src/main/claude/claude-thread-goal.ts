@@ -138,12 +138,13 @@ export class ClaudeThreadGoal {
   /**
    * What a root result writes for the goal, or null. With a goal set, Claude ends a turn on its
    * own only once the goal's Stop hook passes, so a clean end after model work means the goal was
-   * met. It defers that check while background work runs, and any other end (a stop, a turn cap,
-   * an error) leaves the goal open: its row only gains the turn's time.
+   * met. It defers that check while background work runs, and a person's Stop during the check
+   * still ends the turn cleanly. Any of those, or any other end (a turn cap, an error), leaves
+   * the goal open: its row only gains the turn's time.
    */
   settle(
     result: Record<string, unknown>,
-    backgroundWorkRunning: boolean,
+    end: { backgroundWorkRunning: boolean; stoppedByPerson: boolean },
     observedAt: number
   ): GoalRowWrite | null {
     // A subagent's result ends no turn.
@@ -162,7 +163,8 @@ export class ClaudeThreadGoal {
       result.subtype === 'success' &&
       result.is_error !== true &&
       (result.terminal_reason === undefined || result.terminal_reason === 'completed') &&
-      !backgroundWorkRunning
+      !end.backgroundWorkRunning &&
+      !end.stoppedByPerson
     const next: AgentJournalThreadGoal = {
       ...goal,
       status: met ? 'complete' : 'active',
