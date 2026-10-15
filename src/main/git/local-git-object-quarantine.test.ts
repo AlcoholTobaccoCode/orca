@@ -4,7 +4,6 @@ import type { GitObjectQuarantine, GitObjectsDirectory } from '../../shared/git-
 import {
   createLocalGitObjectQuarantine,
   inheritedLocalObjectStore,
-  localGitObjectQuarantineProcessEnv,
   localGitObjectsDirectory
 } from './local-git-object-quarantine'
 import {
@@ -38,33 +37,6 @@ vi.mock('../../shared/git-object-quarantine', async (importOriginal) => ({
     }
   })
 }))
-
-const QUARANTINE = {
-  GIT_OBJECT_DIRECTORY: '/home/me/repo/.git/objects/tmp_objdir-orca-merge-tree-x',
-  GIT_ALTERNATE_OBJECT_DIRECTORIES: '/home/me/repo/.git/objects'
-}
-
-describe('localGitObjectQuarantineProcessEnv', () => {
-  it('forwards both variables through WSLENV on Windows, keeping existing entries', () => {
-    const env = localGitObjectQuarantineProcessEnv(QUARANTINE, 'win32', {
-      PATH: 'C:\\bin',
-      WSLENV: 'ORCA_X/u'
-    })
-
-    expect(env).toMatchObject({ PATH: 'C:\\bin', ...QUARANTINE })
-    expect(env.WSLENV?.split(':')).toEqual([
-      'ORCA_X/u',
-      'GIT_OBJECT_DIRECTORY',
-      'GIT_ALTERNATE_OBJECT_DIRECTORIES'
-    ])
-  })
-
-  it('leaves WSLENV alone off Windows', () => {
-    const env = localGitObjectQuarantineProcessEnv(QUARANTINE, 'darwin', { PATH: '/usr/bin' })
-
-    expect(env).toEqual({ PATH: '/usr/bin', ...QUARANTINE })
-  })
-})
 
 describe('localGitObjectsDirectory', () => {
   it('translates a WSL Git common dir into a path the Windows host can open', () => {
@@ -114,7 +86,7 @@ describe('createLocalGitObjectQuarantine on a Windows host', () => {
   const envSeenBy = (repoPath: string, options: { wslDistro?: string } = {}) =>
     createLocalGitObjectQuarantine(repoPath, options).run(async (env) => env)
 
-  it('takes the distro from a WSL repo path and hands WSL Git the variables through WSLENV', async () => {
+  it('takes the distro from a WSL repo path', async () => {
     readRepoCommonDirFromGitMock.mockResolvedValue('/home/me/repo/.git')
 
     const env = await envSeenBy('\\\\wsl.localhost\\Ubuntu\\home\\me\\repo')
@@ -123,9 +95,6 @@ describe('createLocalGitObjectQuarantine on a Windows host', () => {
       GIT_OBJECT_DIRECTORY: '/home/me/repo/.git/objects/scratch',
       GIT_ALTERNATE_OBJECT_DIRECTORIES: '/home/me/repo/.git/objects'
     })
-    expect(env?.WSLENV?.split(':')).toEqual(
-      expect.arrayContaining(['GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES'])
-    )
   })
 
   it('hands WSL Git the drvfs spelling for a drive-path repo', async () => {

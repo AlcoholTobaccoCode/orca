@@ -4,10 +4,8 @@ import {
   createGitObjectQuarantine,
   inheritedObjectStore,
   pathApiForGitPath,
-  type GitObjectQuarantineEnv,
   type GitObjectsDirectory
 } from '../../shared/git-object-quarantine'
-import { addWslEnvKeys } from '../../shared/wsl-env'
 import { toLinuxPath, toWindowsWslPath } from '../../shared/wsl-paths'
 import { parseWslPath } from '../wsl'
 import { usesHostGitForWslLinkedWorktree } from './wsl-linked-worktree-git-routing'
@@ -33,19 +31,6 @@ export function localGitObjectsDirectory(
     hostPath: pathApiForGitPath(hostCommonDir).join(hostCommonDir, 'objects'),
     gitPath: pathApiForGitPath(gitCommonDir).join(gitCommonDir, 'objects')
   }
-}
-
-export function localGitObjectQuarantineProcessEnv(
-  quarantine: GitObjectQuarantineEnv,
-  platform: NodeJS.Platform = process.platform,
-  baseEnv: NodeJS.ProcessEnv = process.env
-): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...baseEnv, ...quarantine }
-  if (platform === 'win32') {
-    // Why: wsl.exe forwards only WSLENV-named vars; the values are already Linux paths, so no `/p`.
-    addWslEnvKeys(env, ['GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES'])
-  }
-  return env
 }
 
 const OBJECT_STORE_VARIABLES = ['GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES']
@@ -91,6 +76,7 @@ export function createLocalGitObjectQuarantine(
   })
   return {
     run: (command) =>
-      quarantine.run((env) => command(env ? localGitObjectQuarantineProcessEnv(env) : undefined))
+      // Why no WSLENV: the WSL runner puts both variables on WSL Git's command line.
+      quarantine.run((env) => command(env ? { ...process.env, ...env } : undefined))
   }
 }
