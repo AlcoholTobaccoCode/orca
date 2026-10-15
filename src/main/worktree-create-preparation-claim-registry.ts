@@ -25,10 +25,6 @@ export function hasClaims(): boolean {
   return claims.size > 0
 }
 
-export function isClaimed(entry: PreparationEntry): boolean {
-  return [...claims].some((claim) => claim.entry === entry)
-}
-
 function matchingClaim(args: StartPreparationArgs): PreparationClaim | undefined {
   const key = preparationEntryKey(
     preparationPathKey(args.repoPath),

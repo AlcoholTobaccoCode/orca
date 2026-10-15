@@ -75,32 +75,41 @@ afterEach(async () => {
 })
 
 describe('prepared checkout create timing', () => {
-  it('takes the plain add at once while the prepared checkout is still building', async () => {
-    const checkoutStarted = Promise.withResolvers<void>()
-    const checkout = Promise.withResolvers<void>()
-    mocks.prepare.mockImplementation(() => {
-      checkoutStarted.resolve()
-      return checkout.promise
-    })
-    const preparation = prepare()
-    await checkoutStarted.promise
+  it('cancels a still-building checkout and takes the plain add without waiting', async () => {
+    const checkoutStarted = Promise.withResolvers<AbortSignal>()
+    mocks.prepare.mockImplementationOnce(
+      (_repo, _path, _base, _lock, options: { signal: AbortSignal }) => {
+        checkoutStarted.resolve(options.signal)
+        return new Promise<void>((_resolve, reject) => {
+          options.signal.addEventListener('abort', () => reject(options.signal.reason))
+        })
+      }
+    )
+    const preparation = Promise.allSettled([prepare()])
+    const signal = await checkoutStarted.promise
+    const discard = Promise.withResolvers<void>()
+    mocks.discard.mockReturnValueOnce(discard.promise)
     const timing = createWorktreeCreateTimingRecorder(() => 0)
 
-    expect(await consumePreparedWorktreeCreate({ ...request, timing })).toEqual({
-      status: 'miss',
-      reason: 'not_ready'
-    })
+    // Returns while the cancelled checkout's cleanup is still running.
+    const attempt = await consumePreparedWorktreeCreate({ ...request, timing })
+    expect(attempt).toEqual({ status: 'miss', reason: 'not_ready', rearm: expect.any(Function) })
+    expect(signal.aborted).toBe(true)
     expect(timing.finish()).toMatchObject({
       phases: [{ phase: 'prepared_checkout_claim', startedAtMs: 0, durationMs: 0 }],
       preparedCheckout: { status: 'miss', reason: 'not_ready' }
     })
-    expect(mocks.finalize).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect(mocks.discard).toHaveBeenCalledOnce())
 
-    // The skipped checkout keeps building and serves the next create.
-    checkout.resolve()
-    await preparation
-    expect(await consumePreparedWorktreeCreate(request)).toMatchObject({ status: 'hit' })
+    // A prefetch during the create's own add waits until the create releases the claim.
+    await prepare()
     expect(mocks.prepare).toHaveBeenCalledOnce()
+    if (attempt.status === 'miss') {
+      attempt.rearm?.()
+    }
+    await vi.waitFor(() => expect(mocks.prepare).toHaveBeenCalledTimes(2))
+    discard.resolve()
+    await preparation
   })
 
   it('times the cleanup of a failed finalization apart from the finalization', async () => {

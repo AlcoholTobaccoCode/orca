@@ -10,14 +10,12 @@ import {
 import type { AddWorktreeOptions } from './git/worktree'
 import { prepareWorktreeCreateCheckout } from './git/worktree-create-preparation'
 import { WorktreePreparationLockOwnershipError } from './git/worktree-preparation-lock'
-import { queuePreparedWorktreeTipRefresh } from './worktree-preparation-refresh-queue'
 import { toHostFilesystemPath } from './host-tree-removal'
 import { createPreparationActivity } from './worktree-create-preparation-activity'
 import type { PreparationActivity } from './worktree-create-preparation-activity'
 import {
   deferPreparationForClaim,
   hasClaims,
-  isClaimed,
   registerClaim,
   resetClaimsForTests,
   type DeferredPreparation,
@@ -58,14 +56,13 @@ export type PreparationEntry = {
   lockReason: string
   options: AddWorktreeOptions
   createdAt: number
-  /** The checkout's latest build or tip refresh. */
   ready: Promise<void>
-  /** That work finished successfully; only then may a create claim the checkout. */
-  materialized: boolean
+  /** The build finished; only then may a create claim the checkout. */
+  readonly materialized: boolean
   expiration: NodeJS.Timeout
   controller: AbortController
   checkoutStarted: boolean
-  /** Origin, disk work and timing reported by the create that uses it. */
+  /** Readiness, plus the origin, disk work and timing reported by the create that uses it. */
   activity: PreparationActivity
 }
 
@@ -156,6 +153,18 @@ export function takePreparation(
   return registerClaim(entry, requestedKey)
 }
 
+/** Takes a still-building checkout so the create's own add does not share the disk with it; its
+ *  cleanup runs in the background and the claim holds same-key prefetches until the create ends. */
+export function cancelPreparationForCreate(
+  entry: PreparationEntry,
+  requestedCanonicalBase: string
+): PreparationClaim {
+  const claim = takePreparation(entry, requestedCanonicalBase)
+  entry.controller.abort()
+  discardEntryInBackground(entry)
+  return claim
+}
+
 export function startPreparation(
   args: StartPreparationArgs,
   kind: DeferredPreparation['kind'] = 'explicit'
@@ -170,51 +179,14 @@ export function startPreparation(
     if (kind === 'explicit') {
       existing.activity.requestedByPrefetch()
     }
-    return args.beforeMaterialization
-      ? refreshPreparationTip(existing, args.beforeMaterialization)
-      : existing.ready
+    // Built once: finalize resets a claimed checkout onto the create's own base, so a later fetch
+    // queues no disk work on this tree.
+    return existing.ready
   }
   if (deferPreparationForClaim(args, kind)) {
     return Promise.resolve()
   }
   return worktreePreparationGit.run(() => startBackgroundPreparation({ ...args, kind }))
-}
-
-/** A tip refresh is disk work again, so the checkout stays unclaimable until it settles. */
-function publishPreparationWork(entry: PreparationEntry, ready: Promise<void>): void {
-  entry.materialized = false
-  entry.activity.track(ready)
-  void ready.then(
-    () => {
-      if (entry.ready === ready) {
-        entry.materialized = true
-      }
-    },
-    () => {}
-  )
-}
-
-function refreshPreparationTip(
-  entry: PreparationEntry,
-  beforeMaterialization: Promise<void>
-): Promise<void> {
-  const ready = queuePreparedWorktreeTipRefresh(
-    entry,
-    () => {
-      const available = preparations.get(entry.key) === entry
-      if (!available && !isClaimed(entry)) {
-        return
-      }
-      if (available) {
-        preparations.delete(entry.key)
-        clearTimeout(entry.expiration)
-      }
-      discardEntryInBackground(entry)
-    },
-    beforeMaterialization
-  )
-  publishPreparationWork(entry, ready)
-  return ready
 }
 
 function startBackgroundPreparation({
@@ -240,6 +212,7 @@ function startBackgroundPreparation({
   const signal = options.signal
     ? AbortSignal.any([options.signal, controller.signal])
     : controller.signal
+  const activity = createPreparationActivity(kind)
   const expiration = setTimeout(() => expireEntry(entry), WORKTREE_CREATE_PREPARATION_TTL_MS)
   expiration.unref()
   const entry: PreparationEntry = {
@@ -258,9 +231,11 @@ function startBackgroundPreparation({
     expiration,
     controller,
     checkoutStarted: false,
-    activity: createPreparationActivity(kind),
-    ready: Promise.resolve(),
-    materialized: false
+    activity,
+    get materialized() {
+      return activity.built()
+    },
+    ready: Promise.resolve()
   }
   entry.ready = (async () => {
     await startStalePreparationCleanup(
@@ -290,7 +265,7 @@ function startBackgroundPreparation({
     }
   })()
   preparations.set(key, entry)
-  publishPreparationWork(entry, entry.ready)
+  activity.track(entry.ready)
   void entry.ready.catch(() => {
     if (preparations.get(key) === entry) {
       preparations.delete(key)

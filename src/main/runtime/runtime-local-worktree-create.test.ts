@@ -200,10 +200,10 @@ describe('runtime prepared-worktree replenishment', () => {
     expect(mocks.rearm).toHaveBeenCalledOnce()
   })
 
-  it('keeps the failed claim release available when the fallback also fails', async () => {
+  it('keeps the cancelled build claim release available when the fallback also fails', async () => {
     mocks.consume.mockResolvedValue({
       status: 'miss',
-      reason: 'prepare_failed',
+      reason: 'not_ready',
       rearm: mocks.rearm
     })
     mocks.add.mockRejectedValue(new Error('normal add failed'))

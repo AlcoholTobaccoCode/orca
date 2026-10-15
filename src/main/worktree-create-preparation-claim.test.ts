@@ -137,14 +137,15 @@ describe('selectPreparationForCreate', () => {
     expect(selection).toEqual({ kind: 'miss', reason: 'wsl_distro_mismatch' })
   })
 
-  it('claims only a materialized checkout and names a still-building match', () => {
+  it('claims only a built checkout and names a still-building match', () => {
     const building = candidate({ materialized: false, createdAt: 2_000 })
     const ready = candidate({ baseBranch: 'main', canonicalBase: 'refs/heads/main' })
     const local = request({ baseBranch: 'main', canonicalBase: null })
 
     expect(selectPreparationForCreate([building], request())).toEqual({
-      kind: 'miss',
-      reason: 'not_ready'
+      kind: 'not-ready',
+      candidate: building,
+      canonicalBase: 'refs/remotes/origin/main'
     })
     expect(selectPreparationForCreate([building], local)).toEqual({ kind: 'needs-canonical-base' })
     expect(selectPreparationForCreate([building, ready], request())).toEqual({

@@ -31,7 +31,7 @@ export async function discardPreparationEntry(entry: PreparationEntry): Promise<
   if (!entry.checkoutStarted) {
     return
   }
-  // Claim cleanup before yielding so queued refresh failures cannot discard the same checkout.
+  // Claim cleanup before yielding so a second discard of the same entry is a no-op.
   entry.checkoutStarted = false
   await discardPreparationWithRetry({
     hostKey: preparationHostKey(entry.repoPathKey, entry.wslDistro),

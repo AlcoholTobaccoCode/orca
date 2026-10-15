@@ -4,6 +4,7 @@ import { measureRetargetDivergence } from './git/worktree-base-divergence'
 import { resolveLocalWorktreeBaseRef } from './git/worktree-base-ref-probe'
 import { preparationPathKey, selectPreparationForCreate } from './worktree-create-preparation-claim'
 import {
+  cancelPreparationForCreate,
   listPreparations,
   takePreparation,
   type PreparationClaim,
@@ -28,14 +29,29 @@ export type ReservedPreparation = {
   canonicalBase: string
 }
 
+type PreparationMiss = {
+  status: 'miss'
+  reason: PreparedCheckoutMissReason
+  /** Held when the miss cancelled a still-building checkout; released once the create ends. */
+  reservation?: PreparationClaim
+}
+
+function cancelUnbuilt(selection: {
+  candidate: PreparationEntry
+  canonicalBase: string
+}): PreparationMiss {
+  return {
+    status: 'miss',
+    reason: 'not_ready',
+    reservation: cancelPreparationForCreate(selection.candidate, selection.canonicalBase)
+  }
+}
+
 /** Selection through take, so the take stays in the same synchronous run as the last selection. */
 export async function reservePreparation(
   request: { repoPath: string; workspaceRoot: string; baseBranch: string },
   options: AddWorktreeOptions
-): Promise<
-  | ({ status: 'reserved' } & ReservedPreparation)
-  | { status: 'miss'; reason: PreparedCheckoutMissReason }
-> {
+): Promise<({ status: 'reserved' } & ReservedPreparation) | PreparationMiss> {
   const key = {
     repoPathKey: preparationPathKey(request.repoPath),
     workspaceRootKey: preparationPathKey(request.workspaceRoot),
@@ -48,6 +64,9 @@ export async function reservePreparation(
     // below stays one synchronous run and no other create can hold the same entry.
     const canonicalBase = await canonicalBaseRef(request.repoPath, request.baseBranch, options)
     selection = selectPreparationForCreate(listPreparations(), { ...key, canonicalBase })
+  }
+  if (selection.kind === 'not-ready') {
+    return cancelUnbuilt(selection)
   }
   if (selection.kind !== 'exact' && selection.kind !== 'retarget') {
     return {
@@ -78,11 +97,11 @@ export async function reservePreparation(
     // Re-select after the walk: the pool may have gained an exact match or lost this entry. A
     // different retarget candidate is left for the next create rather than claimed unverified.
     selection = selectPreparationForCreate(listPreparations(), { ...key, canonicalBase })
+    if (selection.kind === 'not-ready') {
+      return cancelUnbuilt(selection)
+    }
     if (selection.kind === 'miss' || selection.kind === 'needs-canonical-base') {
-      return {
-        status: 'miss',
-        reason: selection.kind === 'miss' ? selection.reason : 'base_mismatch'
-      }
+      return { status: 'miss', reason: 'base_mismatch' }
     }
     if (selection.kind === 'retarget' && selection.candidate !== candidate) {
       return { status: 'miss', reason: 'base_mismatch' }

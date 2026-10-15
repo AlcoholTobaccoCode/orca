@@ -8,7 +8,6 @@ const mocks: {
   mkdir: Mock
   listWorktreeGraph: Mock
   prepareCheckout: Mock
-  refreshTip: Mock
   finalize: Mock
   discard: Mock
   unlock: Mock
@@ -21,7 +20,6 @@ const mocks: {
   mkdir: vi.fn(),
   listWorktreeGraph: vi.fn(),
   prepareCheckout: vi.fn(),
-  refreshTip: vi.fn(),
   finalize: vi.fn(),
   discard: vi.fn(),
   unlock: vi.fn(),
@@ -41,9 +39,6 @@ vi.mock('../git/worktree-create-preparation', () => ({
   finalizePreparedWorktree: mocks.finalize,
   discardPreparedWorktree: mocks.discard,
   unlockPreparedWorktree: mocks.unlock
-}))
-vi.mock('../git/worktree-preparation-tip-refresh', () => ({
-  refreshPreparedWorktreeTip: mocks.refreshTip
 }))
 vi.mock('../git/worktree-base-ref-probe', () => ({
   resolveLocalWorktreeBaseRef: mocks.resolveBaseRef
@@ -86,7 +81,6 @@ beforeEach(() => {
   mocks.mkdir.mockReset().mockResolvedValue(undefined)
   mocks.listWorktreeGraph.mockReset().mockResolvedValue([])
   mocks.prepareCheckout.mockReset().mockResolvedValue(undefined)
-  mocks.refreshTip.mockReset().mockResolvedValue(undefined)
   mocks.finalize.mockReset().mockResolvedValue({})
   mocks.discard.mockReset().mockResolvedValue(undefined)
   mocks.unlock.mockReset().mockResolvedValue(undefined)

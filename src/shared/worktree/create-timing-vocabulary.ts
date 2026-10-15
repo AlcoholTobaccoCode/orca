@@ -42,7 +42,7 @@ export const PREPARED_CHECKOUT_MISS_REASONS = [
   'retarget_unverifiable',
   'workspace_root_mismatch',
   'wsl_distro_mismatch',
-  /** A matching checkout was still building or refreshing its tip; the create took the plain add
+  /** A matching checkout was still building; the create cancelled it and took the plain add
    *  instead of waiting for it. */
   'not_ready',
   /** Not produced since a create claims only a finished checkout; left in the event schema. */

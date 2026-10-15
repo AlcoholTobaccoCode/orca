@@ -12,7 +12,6 @@ export type PreparationSelectionMissReason = Extract<
   | 'base_mismatch'
   | 'workspace_root_mismatch'
   | 'wsl_distro_mismatch'
-  | 'not_ready'
 >
 
 export type PreparationCandidate = {
@@ -24,8 +23,8 @@ export type PreparationCandidate = {
   /** That base after `resolveWorktreeAddBaseRef`, so `main` and `refs/heads/main` compare equal. */
   canonicalBase: string
   createdAt: number
-  /** Its latest build or tip refresh has finished; a create never waits for one. */
-  materialized: boolean
+  /** Its build has finished; a create never waits for one. */
+  readonly materialized: boolean
 }
 
 export type PreparationRequest = {
@@ -65,6 +64,8 @@ export type PreparationSelection<T> =
   /** Something is armed for this repo but not under this raw base; only a resolved canonical base
    *  can decide between a hit and a miss. */
   | { kind: 'needs-canonical-base' }
+  /** Only a still-building checkout matches; the caller cancels it rather than wait for it. */
+  | { kind: 'not-ready'; candidate: T; canonicalBase: string }
   | { kind: 'miss'; reason: PreparationSelectionMissReason }
 
 /**
@@ -115,7 +116,6 @@ export function selectPreparationForCreate<T extends PreparationCandidate>(
   if (selection.kind !== 'miss') {
     return selection
   }
-  // Nothing claimable matches; a match that is still building is reported as its own miss.
   const unready = selectByBase(sameRoot, request)
   if (unready.kind === 'miss') {
     return selection
@@ -123,13 +123,13 @@ export function selectPreparationForCreate<T extends PreparationCandidate>(
   if (unready.kind === 'needs-canonical-base') {
     return unready
   }
-  return { kind: 'miss', reason: 'not_ready' }
+  return { kind: 'not-ready', candidate: unready.candidate, canonicalBase: unready.canonicalBase }
 }
 
 function selectByBase<T extends PreparationCandidate>(
   candidates: readonly T[],
   request: PreparationRequest
-): PreparationSelection<T> {
+): Exclude<PreparationSelection<T>, { kind: 'not-ready' }> {
   if (candidates.length === 0) {
     return { kind: 'miss', reason: 'base_mismatch' }
   }
