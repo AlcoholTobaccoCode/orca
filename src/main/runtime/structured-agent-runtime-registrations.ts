@@ -215,7 +215,11 @@ function acpRegistration(spec: AcpLaunchSpec): StructuredAgentRuntimeRegistratio
           launchCheck: {
             resolveLaunch: (shellEnv, commandSettings) => {
               const env = { ...shellEnv, ...spec.env }
-              return { command: resolveAcpLaunchCommand(spec, env, { commandSettings }), env }
+              const command = resolveAcpLaunchCommand(spec, env, {
+                commandSettings,
+                dataDirectory: null
+              })
+              return { command, env }
             },
             supportsVersion: (launch) => acpLaunchVersionSupported(spec, launch)
           }
@@ -234,6 +238,7 @@ function acpRegistration(spec: AcpLaunchSpec): StructuredAgentRuntimeRegistratio
       const part = acpStructuredLaunchPart(spec, {
         readJournal,
         ...(deps.resolveAgentFullAccess ? { resolveFullAccess: deps.resolveAgentFullAccess } : {}),
+        dataDirectory: deps.stateDirectory,
         logger: deps.logger
       })
       return new AcpStructuredSessionAdapter({

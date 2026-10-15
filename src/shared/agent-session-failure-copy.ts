@@ -71,6 +71,7 @@ export const AGENT_SESSION_FAILURE_COPY = {
   claudeAccountSetupFailed: CLAUDE_PROFILE_SETUP_FAILED_MESSAGE,
   agentCommandNotRunnable:
     "{{agent}}'s Command in Settings → Agents must be a program path or name Orca can find, with no arguments or variables. Change it or reset it.",
+  runtimeNotInstalled: "{{agent}} isn't installed on this host. Install it from Settings → Chat.",
   chooseClaudeAccount: 'Choose or add one in Claude Accounts settings.',
   chooseClaudeAccountThenRunCommand:
     'Choose or add one in Claude Accounts settings, then run /{{command}} again.',
