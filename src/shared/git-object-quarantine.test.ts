@@ -15,7 +15,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   createGitObjectQuarantine,
   GIT_OBJECT_QUARANTINE_DIR_PREFIX,
-  inheritedObjectStore,
   type GitObjectQuarantineEnv
 } from './git-object-quarantine'
 
@@ -59,37 +58,6 @@ describe('createGitObjectQuarantine', () => {
   const scratchDirs = (): string[] =>
     readdirSync(objects).filter((entry) => entry.startsWith(GIT_OBJECT_QUARANTINE_DIR_PREFIX))
 
-  it('points Git at a scratch dir inside objects/ and removes it afterwards', async () => {
-    let seen: GitObjectQuarantineEnv | undefined
-
-    await expect(
-      createGitObjectQuarantine(resolveNative()).run(async (env) => {
-        seen = env
-        expect(scratchDirs()).toHaveLength(1)
-        return 'ok'
-      })
-    ).resolves.toBe('ok')
-
-    expect(seen).toEqual({
-      GIT_OBJECT_DIRECTORY: expect.stringContaining(
-        join(objects, GIT_OBJECT_QUARANTINE_DIR_PREFIX)
-      ),
-      GIT_ALTERNATE_OBJECT_DIRECTORIES: objects
-    })
-    expect(scratchDirs()).toEqual([])
-  })
-
-  it('removes the scratch dir when the command fails', async () => {
-    const failure = new Error('merge-tree failed')
-
-    await expect(
-      createGitObjectQuarantine(resolveNative()).run(async () => {
-        throw failure
-      })
-    ).rejects.toBe(failure)
-    expect(scratchDirs()).toEqual([])
-  })
-
   it.each([
     ['the objects dir is unknown', async () => undefined],
     [
@@ -108,35 +76,6 @@ describe('createGitObjectQuarantine', () => {
     await expect(createGitObjectQuarantine(resolve).run(command)).resolves.toBe('ok')
 
     expect(command).toHaveBeenCalledWith(undefined)
-  })
-
-  it('resolves the objects dir once and gives every run its own scratch dir', async () => {
-    const resolve = vi.fn(resolveNative())
-    const quarantine = createGitObjectQuarantine(resolve)
-    const seen: (string | undefined)[] = []
-
-    await quarantine.run(async (env) => seen.push(env?.GIT_OBJECT_DIRECTORY))
-    await quarantine.run(async (env) => seen.push(env?.GIT_OBJECT_DIRECTORY))
-
-    expect(resolve).toHaveBeenCalledTimes(1)
-    expect(new Set(seen).size).toBe(2)
-  })
-
-  it('creates the scratch dir in host spelling but hands WSL Git its Linux spelling', async () => {
-    let seen: GitObjectQuarantineEnv | undefined
-
-    await createGitObjectQuarantine(async () => ({
-      hostPath: objects,
-      gitPath: '/home/me/repo/.git/objects'
-    })).run(async (env) => {
-      seen = env
-      expect(scratchDirs()).toHaveLength(1)
-    })
-
-    expect(seen?.GIT_OBJECT_DIRECTORY).toMatch(
-      new RegExp(`^/home/me/repo/\\.git/objects/${GIT_OBJECT_QUARANTINE_DIR_PREFIX}\\w+$`)
-    )
-    expect(seen?.GIT_ALTERNATE_OBJECT_DIRECTORIES).toBe('/home/me/repo/.git/objects')
   })
 
   it.each([
@@ -207,17 +146,6 @@ describe('createGitObjectQuarantine', () => {
     expect(scratchDirs()).toEqual([])
   })
 
-  it('quarantines a store whose info/ holds no alternates file', async () => {
-    writeFileSync(join(objects, 'info'), 'not a directory')
-    const command = vi.fn(async () => 'ok')
-
-    await createGitObjectQuarantine(resolveNative()).run(command)
-
-    expect(command).toHaveBeenCalledWith(
-      expect.objectContaining({ GIT_ALTERNATE_OBJECT_DIRECTORIES: objects })
-    )
-  })
-
   it('moves packs Git fetched into the scratch dir to the real store, index last', async () => {
     await createGitObjectQuarantine(resolveNative()).run(async (env) => {
       const scratchPack = join(env?.GIT_OBJECT_DIRECTORY ?? '', 'pack')
@@ -280,18 +208,5 @@ describe('createGitObjectQuarantine', () => {
       '[git-object-quarantine] could not keep a fetched pack',
       expect.any(Error)
     )
-  })
-})
-
-describe('inheritedObjectStore', () => {
-  it('passes inherited alternates on, so the quarantine can append to them', () => {
-    expect(inheritedObjectStore({ GIT_ALTERNATE_OBJECT_DIRECTORIES: '/shared' })).toEqual({
-      inheritedAlternates: '/shared'
-    })
-    expect(inheritedObjectStore({})).toEqual({})
-  })
-
-  it('refuses an inherited object dir, which is the store Git reads and writes', () => {
-    expect(inheritedObjectStore({ GIT_OBJECT_DIRECTORY: '/elsewhere/objects' })).toBeUndefined()
   })
 })

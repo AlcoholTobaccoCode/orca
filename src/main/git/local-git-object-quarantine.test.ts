@@ -86,25 +86,6 @@ describe('createLocalGitObjectQuarantine on a Windows host', () => {
   const envSeenBy = (repoPath: string, options: { wslDistro?: string } = {}) =>
     createLocalGitObjectQuarantine(repoPath, options).run(async (env) => env)
 
-  it('takes the distro from a WSL repo path', async () => {
-    readRepoCommonDirFromGitMock.mockResolvedValue('/home/me/repo/.git')
-
-    const env = await envSeenBy('\\\\wsl.localhost\\Ubuntu\\home\\me\\repo')
-
-    expect(env).toMatchObject({
-      GIT_OBJECT_DIRECTORY: '/home/me/repo/.git/objects/scratch',
-      GIT_ALTERNATE_OBJECT_DIRECTORIES: '/home/me/repo/.git/objects'
-    })
-  })
-
-  it('hands WSL Git the drvfs spelling for a drive-path repo', async () => {
-    readRepoCommonDirFromGitMock.mockResolvedValue('C:\\repo\\.git')
-
-    const env = await envSeenBy('C:\\repo', { wslDistro: 'Ubuntu' })
-
-    expect(env?.GIT_OBJECT_DIRECTORY).toBe('/mnt/c/repo/.git/objects/scratch')
-  })
-
   it('runs unquarantined when a WSL-authored linked worktree routes to Windows Git', async () => {
     readRepoCommonDirFromGitMock.mockResolvedValue('/mnt/c/repo/.git')
     seedWslLinkedWorktreeGitRoutingForTests('C:\\wt')

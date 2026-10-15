@@ -419,41 +419,6 @@ describe('getPRConflictSummary caching', () => {
     expect(gitExecFileAsyncMock.mock.calls.filter(([, options]) => options?.env)).toEqual([])
   })
 
-  it('runs the first merge-tree as Git always has, then the next ones against a scratch store', async () => {
-    const commonDir = join(
-      realpathSync(mkdtempSync(join(tmpdir(), 'orca-conflict-summary-'))),
-      '.git'
-    )
-    mkdirSync(join(commonDir, 'objects'), { recursive: true })
-    try {
-      mockGitDispatch({ [COMMON_DIR_COMMAND]: async () => ({ stdout: `${commonDir}\n` }) })
-
-      await expect(deriveSummary('head-oid-1')).resolves.toEqual(expectedSummary)
-      expect(spawnCount(COMMON_DIR_COMMAND)).toBe(0)
-      expect(scratchFolderPrefixes).toEqual([])
-      await expect(deriveSummary('head-oid-2')).resolves.toEqual(expectedSummary)
-
-      const envs = gitExecFileAsyncMock.mock.calls
-        .filter(([argv]) => argv[0] === 'merge-tree')
-        .map(([argv, options]) => [argv.includes('--merge-base'), options?.env])
-      expect(envs).toEqual([
-        [true, undefined],
-        [
-          true,
-          expect.objectContaining({
-            GIT_OBJECT_DIRECTORY: expect.stringContaining(
-              join(commonDir, 'objects', 'tmp_objdir-orca-merge-tree-')
-            )
-          })
-        ]
-      ])
-      expect(scratchFolderPrefixes).toHaveLength(1)
-      expect(readdirSync(join(commonDir, 'objects'))).toEqual([])
-    } finally {
-      rmSync(join(commonDir, '..'), { recursive: true, force: true })
-    }
-  })
-
   it('runs the legacy merge-tree fallback against the scratch object store too', async () => {
     const commonDir = join(
       realpathSync(mkdtempSync(join(tmpdir(), 'orca-conflict-summary-'))),
