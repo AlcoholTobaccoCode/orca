@@ -250,7 +250,7 @@ export function MobileNativeChatView({
     endMomentum,
     readerIsScrolling,
     recordScrollMetrics
-  } = useMobileNativeChatTailFollow<NativeChatMessage>({ hasItems: data.length > 0 })
+  } = useMobileNativeChatTailFollow({ items: data, scopeKey: sendSurfaceId })
 
   const handleSend = useCallback(
     async (text: string): Promise<boolean> => {
@@ -321,7 +321,7 @@ export function MobileNativeChatView({
     [toolsExpanded, fontScale, onOpenFile, structuredActivityUi, turns, unsentNotices]
   )
 
-  const history = useMobileNativeChatPageHistory(turns.listMessages, renderItem)
+  const history = useMobileNativeChatPageHistory(turns.listMessages, renderItem, sendSurfaceId)
 
   const liveStatus = turns.liveLine ? (
     <MobileNativeChatLiveLine

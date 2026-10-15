@@ -784,6 +784,26 @@ describe('MobileNativeChatView', () => {
     expect(scrollToOffset).toHaveBeenLastCalledWith({ animated: false, offset: 1_300 })
   })
 
+  // The view stays mounted across chat tabs, so the reader's place in one must not carry over.
+  it('opens another chat at its newest message, following, keeping the Tools toggle', async () => {
+    await render({ folded: [assistantTurn('a1', 'Chat A')] })
+    await scrollAwayFromTail()
+    const label = (text: string) => renderer!.root.findAllByProps({ children: text })
+    const jumpControls = () =>
+      renderer!.root.findAllByProps({ accessibilityLabel: 'Scroll to latest' })
+    act(() => label('Tools')[0].parent!.props.onPress())
+    expect(jumpControls()).toHaveLength(1)
+    scrollToEnd.mockClear()
+
+    await update({ folded: [assistantTurn('b1', 'Chat B')], sendSurfaceId: 'tab-b' })
+
+    expect(scrollToEnd).toHaveBeenCalledWith({ animated: false })
+    expect(jumpControls()).toHaveLength(0)
+    act(() => list().props.onContentSizeChange(320, 900))
+    expect(scrollToOffset).toHaveBeenLastCalledWith({ animated: false, offset: 900 })
+    expect(label('Collapse')).toHaveLength(1)
+  })
+
   it('repins after a keyboard-driven viewport layout only while following', async () => {
     vi.useFakeTimers()
     try {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import {
   Platform,
   type FlatList,
@@ -69,10 +69,13 @@ export type MobileNativeChatTailFollow<TItem> = {
  *  move intent; metrics only decide where a *released* gesture leaves us.
  */
 export function useMobileNativeChatTailFollow<TItem>(args: {
-  /** Guards `scrollToEnd` against an empty list. */
-  hasItems: boolean
+  /** The list's rows; an empty list is never scrolled. */
+  items: readonly TItem[]
+  /** The chat shown; another one opens following, whatever the reader did in this one. */
+  scopeKey: string
 }): MobileNativeChatTailFollow<TItem> {
-  const { hasItems } = args
+  const { scopeKey } = args
+  const hasItems = args.items.length > 0
   const listRef = useRef<FlatList<TItem> | null>(null)
   const [following, setFollowingFlag] = useState(true)
   const [atTail, setAtTailFlag] = useState(true)
@@ -85,6 +88,7 @@ export function useMobileNativeChatTailFollow<TItem>(args: {
   const pageOffsetRef = useRef(0)
   const pageContentHeightRef = useRef(0)
   const pageReaderMovedUpRef = useRef(false)
+  const scopeKeyRef = useRef(scopeKey)
 
   // Single writer, so the event-time ref and the render flag cannot disagree.
   const setFollowing = useCallback((next: boolean) => {
@@ -216,6 +220,16 @@ export function useMobileNativeChatTailFollow<TItem>(args: {
     () => (listReportsGestures() ? userScrollActiveRef.current : pageReaderMovedUpRef.current),
     []
   )
+
+  // Before paint, so the next chat never shows where the reader left the last one.
+  useLayoutEffect(() => {
+    if (scopeKeyRef.current !== scopeKey) {
+      scopeKeyRef.current = scopeKey
+      pageOffsetRef.current = 0
+      pageReaderMovedUpRef.current = false
+      jumpToTail()
+    }
+  }, [scopeKey, jumpToTail])
 
   useEffect(() => clearUserScrollSettle, [clearUserScrollSettle])
 
