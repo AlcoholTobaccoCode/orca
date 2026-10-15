@@ -14,6 +14,7 @@ import {
 } from '../native-chat/agent-session-journal/journal-payload-bounds'
 import { claudeRecord, claudeText } from './claude-structured-item-translation'
 import { isRootClaudeFrame } from './claude-turn-opening'
+import type { ClaudeGoalBackgroundWork } from './claude-background-task-tracker'
 
 const GOAL_SET = 'Goal set: '
 const GOAL_ACTIVE = /^Goal active: ([\s\S]+?) \((?:not yet evaluated|\d+ turns?)\)/u
@@ -70,6 +71,10 @@ function goalRow(text: string, goal: AgentJournalThreadGoal | null): GoalStatusB
 }
 
 type GoalRowWrite = { identity: AgentJournalItemIdentity; body: GoalStatusBody }
+type SavedGoal = {
+  goal: AgentJournalThreadGoal | null
+  row: { identity: AgentJournalItemIdentity; text: string } | null
+}
 
 export class ClaudeThreadGoal {
   /** Undefined until first needed: the journal answers for goals set before this process. */
@@ -80,11 +85,15 @@ export class ClaudeThreadGoal {
   private modelWorked = false
 
   /** `journalGoal` answers undefined until the sink is bound to its journal. */
-  constructor(private readonly journalGoal: () => AgentJournalThreadGoal | null | undefined) {}
+  constructor(private readonly journalGoal: () => SavedGoal | undefined) {}
 
   private get current(): AgentJournalThreadGoal | null {
     if (this.known === undefined) {
-      this.known = this.journalGoal()
+      const saved = this.journalGoal()
+      if (saved) {
+        this.known = saved.goal
+        this.row = saved.row?.identity.provider === 'claude' ? saved.row : null
+      }
     }
     return this.known ?? null
   }
@@ -145,7 +154,7 @@ export class ClaudeThreadGoal {
   settle(
     result: Record<string, unknown>,
     end: {
-      backgroundWorkRunning: boolean
+      backgroundWork: ClaudeGoalBackgroundWork
       stoppedByPerson: boolean
       turnStartedAt: number | null
     },
@@ -170,7 +179,7 @@ export class ClaudeThreadGoal {
       result.subtype === 'success' &&
       result.is_error !== true &&
       (result.terminal_reason === undefined || result.terminal_reason === 'completed') &&
-      !end.backgroundWorkRunning &&
+      end.backgroundWork === 'exited' &&
       !end.stoppedByPerson
     const next: AgentJournalThreadGoal = {
       ...goal,
@@ -188,7 +197,7 @@ export class ClaudeThreadGoal {
           }
         : null
     }
-    // A goal this process never wrote (set before a restart) keeps the time its row has.
+    // A restart recovers the original identity with the goal, so this revision stays in place.
     return this.row ? { identity: this.row.identity, body: goalRow(this.row.text, next) } : null
   }
 }

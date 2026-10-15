@@ -841,6 +841,44 @@ describe('NativeChatStructuredSession', () => {
     expect(mocks.revealLatest).toHaveBeenCalledTimes(2)
   })
 
+  it('reveals a Claude goal cleared from the strip while preserving the composer draft', () => {
+    const change = vi.fn(async () => true)
+    mocks.threadGoal = {
+      goal: {
+        objective: 'Ship the parser',
+        status: 'active',
+        tokenBudget: null,
+        tokensUsed: 0,
+        timeUsedSeconds: 0,
+        createdAt: 1,
+        updatedAt: 1
+      },
+      pending: false,
+      hostChanges: false,
+      change
+    }
+    render(
+      <TooltipProvider>
+        <NativeChatStructuredSession
+          isVisible
+          isFocusedGroup
+          tabId="structured-goal-clear"
+          sessionId="session-goal-clear"
+          target={{ kind: 'local' }}
+          agent="claude"
+        />
+      </TooltipProvider>
+    )
+    const composer = screen.getByRole('textbox', { name: 'Message' })
+    fireEvent.change(composer, { target: { value: 'Keep this draft' } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear goal' }))
+
+    expect(change).toHaveBeenCalledWith({ kind: 'clear' })
+    expect(mocks.revealLatest).toHaveBeenCalledOnce()
+    expect(composer).toHaveProperty('value', 'Keep this draft')
+  })
+
   it("brings the latest into view when a queued card's Steer sends it now", () => {
     mocks.queuedCards = [
       { messageId: 'draft-1', position: 1, text: 'Also check SSH', state: 'waiting', hold: 'turn' }

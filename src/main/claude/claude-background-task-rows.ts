@@ -151,16 +151,6 @@ export class ClaudeBackgroundTaskRows {
     return this.observePatch(id, message)
   }
 
-  /** Whether a task this session journaled is still running. */
-  get running(): boolean {
-    for (const row of this.rows.values()) {
-      if (!isSettledBackgroundTaskState(row.block.state)) {
-        return true
-      }
-    }
-    return false
-  }
-
   settleSession(): void {
     for (const [id, row] of this.rows) {
       if (!isSettledBackgroundTaskState(row.block.state)) {

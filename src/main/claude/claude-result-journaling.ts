@@ -15,6 +15,7 @@ import {
 } from './claude-structured-provider-fallback'
 import { claudeTurnEndForResult } from './claude-turn-lifecycle-item'
 import { claudeFrameParentRef, isRootClaudeFrame } from './claude-turn-opening'
+import type { ClaudeGoalBackgroundWork } from './claude-background-task-tracker'
 
 export type ClaudeResultJournalContext = Pick<
   ClaudeMessageJournalContext,
@@ -26,10 +27,10 @@ export type ClaudeResultJournalContext = Pick<
   | 'turn'
   | 'authenticationFailures'
   | 'threadGoal'
-  | 'backgroundTasks'
 > & {
   prompts: ClaudeJournalPrompts
   context: ClaudeContextFacts
+  goalBackgroundWork: () => ClaudeGoalBackgroundWork
 }
 
 export function journalClaudeResult(
@@ -44,7 +45,7 @@ export function journalClaudeResult(
     context,
     authenticationFailures,
     threadGoal,
-    backgroundTasks
+    goalBackgroundWork
   }: ClaudeResultJournalContext,
   message: Record<string, unknown>,
   observedAt: number
@@ -79,7 +80,7 @@ export function journalClaudeResult(
   const goal = threadGoal.settle(
     message,
     {
-      backgroundWorkRunning: backgroundTasks.running,
+      backgroundWork: goalBackgroundWork(),
       stoppedByPerson: leftToStop,
       turnStartedAt: endedTurnStartedAt
     },

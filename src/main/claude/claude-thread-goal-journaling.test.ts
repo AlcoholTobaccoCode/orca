@@ -6,14 +6,20 @@ import type {
 } from '../../shared/agent-session-journal-types'
 import type { StructuredAgentSessionEventSink } from '../native-chat/agent-session-wire/structured-agent-session-event-sink'
 import { createClaudeJournalTranslator } from './claude-structured-journal-translation'
+import { ClaudeBackgroundTaskTracker } from './claude-background-task-tracker'
+import { MOVED_TO_BACKGROUND } from './claude-captured-task-frames.test-fixture'
 
 // Frame shapes captured from Claude Code 2.1.280 stream-json: `/goal` answers with a root
 // `<synthetic>` assistant reply, and a met goal ends the turn with no goal frame of its own.
 const OBJECTIVE = 'reply with exactly the word done'
 
-function goalSink(journalGoal: AgentJournalThreadGoal | null = null) {
+function goalSink(
+  journalGoal: AgentJournalThreadGoal | null = null,
+  journalRow?: { identity: AgentJournalItemIdentity; body: AgentJournalItemBody }
+) {
   const rows: { identity: AgentJournalItemIdentity; body: AgentJournalItemBody }[] = []
   let stopped = false
+  const backgroundTasks = new ClaudeBackgroundTaskTracker()
   const sink: StructuredAgentSessionEventSink = {
     appendItem: (identity, body) => rows.push({ identity, body }),
     appendTombstone: vi.fn(),
@@ -22,13 +28,25 @@ function goalSink(journalGoal: AgentJournalThreadGoal | null = null) {
     journalLinkage: () => ({
       epoch: 'test',
       visitItemsWithLinkage: () => {},
-      threadGoal: () => journalGoal
+      threadGoal: () => journalGoal,
+      threadGoalSource: () => ({
+        goal: journalGoal,
+        row:
+          journalRow?.body.kind === 'status'
+            ? { identity: journalRow.identity, text: journalRow.body.text }
+            : null
+      })
     })
   }
-  const translator = createClaudeJournalTranslator({ sink, coalesceMs: 0 })
+  const translator = createClaudeJournalTranslator({
+    sink,
+    coalesceMs: 0,
+    goalBackgroundWork: () => backgroundTasks.goalBackgroundWork
+  })
   let at = 1_000
   const frame = (message: Record<string, unknown>, elapsedMs = 1_000) => {
     at += elapsedMs
+    backgroundTasks.observe(message)
     translator.handle({
       type: 'message',
       sessionId: 'orca-session',
@@ -48,10 +66,14 @@ function goalSink(journalGoal: AgentJournalThreadGoal | null = null) {
     rows.flatMap(({ identity, body }) =>
       body.kind === 'status' && body.threadGoal ? [{ identity, body }] : []
     )
+  const savedGoal = () => {
+    const body = goals().at(-1)?.body
+    return body?.kind === 'status' && body.threadGoal?.state === 'set' ? body.threadGoal.goal : null
+  }
   const pressStop = () => {
     stopped = true
   }
-  return { reply, result, goals, pressStop }
+  return { frame, reply, result, goals, savedGoal, pressStop }
 }
 
 describe('Claude /goal journaling', () => {
@@ -119,6 +141,59 @@ describe('Claude /goal journaling', () => {
       `Goal set: ${OBJECTIVE}`
     ])
     expect(goals().at(-1)?.body).toMatchObject({ threadGoal: { goal: { status: 'active' } } })
+  })
+
+  it('keeps the goal active when a captured background Agent outlives a clean root result', () => {
+    const { frame, reply, goals } = goalSink()
+    reply('goal-set', '<synthetic>', `Goal set: ${OBJECTIVE}`)
+    let previousAt = 0
+    for (const [index, captured] of MOVED_TO_BACKGROUND.entries()) {
+      frame({ uuid: `capture-${index}`, ...captured.frame }, captured.at - previousAt)
+      previousAt = captured.at
+      if (captured.frame.type === 'result') {
+        break
+      }
+    }
+
+    expect(goals().at(-1)?.body).toMatchObject({
+      threadGoal: { goal: { status: 'active' } }
+    })
+    expect(
+      goals().some(({ body }) => body.kind === 'status' && body.text.startsWith('Goal complete'))
+    ).toBe(false)
+  })
+
+  it('saves elapsed goal time after restart when a person stops the turn', () => {
+    const beforeRestart = goalSink()
+    beforeRestart.reply('goal-set', '<synthetic>', `Goal set: ${OBJECTIVE}`)
+
+    const afterRestart = goalSink(beforeRestart.savedGoal(), beforeRestart.goals().at(-1))
+    afterRestart.reply('work', 'claude-opus-5-5', 'Still waiting.')
+    afterRestart.pressStop()
+    afterRestart.result(
+      'stopped',
+      { subtype: 'success', is_error: false, terminal_reason: 'completed' },
+      5_000
+    )
+
+    expect(afterRestart.goals()).toEqual([
+      {
+        identity: { provider: 'claude', sessionId: 'claude-session', uuid: 'goal-set' },
+        body: expect.objectContaining({
+          text: `Goal set: ${OBJECTIVE}`,
+          threadGoal: {
+            state: 'set',
+            goal: expect.objectContaining({ status: 'active', timeUsedSeconds: 5 })
+          }
+        })
+      }
+    ])
+
+    const reloaded = goalSink(afterRestart.savedGoal(), afterRestart.goals().at(-1))
+    reloaded.reply('status', '<synthetic>', `Goal active: ${OBJECTIVE} (not yet evaluated)`)
+    expect(reloaded.goals()[0]?.body).toMatchObject({
+      threadGoal: { goal: { status: 'active', timeUsedSeconds: 5 } }
+    })
   })
 
   it('keeps a goal set before a restart open through a status reply, and clears it on /goal clear', () => {
