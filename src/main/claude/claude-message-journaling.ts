@@ -91,7 +91,7 @@ export function journalClaudeMessage(
       : envelope.parentToolUseId
   const stamp = ctx.corrections.stampFor(producerRef)
   const outputEnvelope = claudeOutputEnvelope(envelope)
-  ctx.threadGoal.observe(message, observedAt)
+  ctx.threadGoal.observe(message)
   const body =
     ctx.authenticationFailures.assistant(message) ??
     ctx.threadGoal.report(message, claudeMessageIdentity(envelope), observedAt) ??

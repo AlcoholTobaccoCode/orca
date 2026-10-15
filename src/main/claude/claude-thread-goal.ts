@@ -76,8 +76,8 @@ export class ClaudeThreadGoal {
   private known: AgentJournalThreadGoal | null | undefined
   /** The row this process wrote for the goal, which a turn's time revises in place. */
   private row: { identity: AgentJournalItemIdentity; text: string } | null = null
-  /** When the model's work toward the active goal began in the open turn, if it has. */
-  private workingSince: number | null = null
+  /** Whether the model worked toward the active goal in the open turn. */
+  private modelWorked = false
 
   /** `journalGoal` answers undefined until the sink is bound to its journal. */
   constructor(private readonly journalGoal: () => AgentJournalThreadGoal | null | undefined) {}
@@ -117,21 +117,20 @@ export class ClaudeThreadGoal {
             }
     this.known = next
     this.row = next ? { identity, text } : null
-    this.workingSince = null
+    this.modelWorked = false
     return goalRow(text, next)
   }
 
   /** Root model output: a turn the goal's Stop hook will judge before Claude ends it. */
-  observe(message: Record<string, unknown>, observedAt: number): void {
+  observe(message: Record<string, unknown>): void {
     const reply = claudeRecord(message.message)
     if (
-      this.workingSince === null &&
       message.type === 'assistant' &&
       isRootClaudeFrame(message) &&
       reply?.model !== '<synthetic>' &&
       this.current?.status === 'active'
     ) {
-      this.workingSince = observedAt
+      this.modelWorked = true
     }
   }
 
@@ -140,11 +139,16 @@ export class ClaudeThreadGoal {
    * own only once the goal's Stop hook passes, so a clean end after model work means the goal was
    * met. It defers that check while background work runs, and a person's Stop during the check
    * still ends the turn cleanly. Any of those, or any other end (a turn cap, an error), leaves
-   * the goal open: its row only gains the turn's time.
+   * the goal open: its row only gains the turn's time, counted as the banner counts it, from the
+   * later of the goal's last update and the turn's start.
    */
   settle(
     result: Record<string, unknown>,
-    end: { backgroundWorkRunning: boolean; stoppedByPerson: boolean },
+    end: {
+      backgroundWorkRunning: boolean
+      stoppedByPerson: boolean
+      turnStartedAt: number | null
+    },
     observedAt: number
   ): GoalRowWrite | null {
     // A subagent's result ends no turn.
@@ -152,14 +156,17 @@ export class ClaudeThreadGoal {
       return null
     }
     const goal = this.current
-    const since = this.workingSince
-    this.workingSince = null
-    if (goal?.status !== 'active' || since === null) {
+    const worked = this.modelWorked
+    this.modelWorked = false
+    // A command answered with no model turn (a bare `/goal`) spent no time on the goal.
+    if (goal?.status !== 'active' || (!worked && result.num_turns === 0)) {
       return null
     }
+    const since = Math.max(goal.updatedAt, end.turnStartedAt ?? goal.updatedAt)
     const sessionId = claudeText(result.session_id)
     const uuid = claudeText(result.uuid)
     const met =
+      worked &&
       result.subtype === 'success' &&
       result.is_error !== true &&
       (result.terminal_reason === undefined || result.terminal_reason === 'completed') &&

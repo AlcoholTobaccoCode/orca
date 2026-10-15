@@ -58,7 +58,7 @@ export function NativeChatThreadGoalBanner(props: {
   const [expanded, setExpanded] = useState(false)
   const { runningTurn } = props
   const now = useNow(1_000, props.isVisible && goal.status === 'active' && runningTurn !== null)
-  const label = nativeChatThreadGoalStatusLabel(goal.status)
+  const label = nativeChatThreadGoalStatusLabel(goal.status, runningTurn !== null)
   const statusChange = props.hostChanges ? agentSessionThreadGoalStatusChange(goal.status) : null
   if (label === null) {
     return null

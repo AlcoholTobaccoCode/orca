@@ -89,7 +89,7 @@ describe('Claude /goal journaling', () => {
           text: `Goal set: ${OBJECTIVE}`,
           threadGoal: {
             state: 'set',
-            goal: expect.objectContaining({ status: 'active', timeUsedSeconds: 5 })
+            goal: expect.objectContaining({ status: 'active', timeUsedSeconds: 6 })
           }
         })
       },
@@ -99,7 +99,7 @@ describe('Claude /goal journaling', () => {
           text: `Goal complete: ${OBJECTIVE}`,
           threadGoal: {
             state: 'set',
-            goal: expect.objectContaining({ status: 'complete', timeUsedSeconds: 8 })
+            goal: expect.objectContaining({ status: 'complete', timeUsedSeconds: 10 })
           }
         })
       }
@@ -133,7 +133,7 @@ describe('Claude /goal journaling', () => {
     })
     // A bare `/goal` runs no model turn, so its clean end says nothing about the goal.
     reply('status', '<synthetic>', `Goal active: ${OBJECTIVE} (not yet evaluated)`)
-    result('status-result', { subtype: 'success', is_error: false })
+    result('status-result', { subtype: 'success', is_error: false, num_turns: 0 })
     reply('clear', '<synthetic>', `Goal cleared: ${OBJECTIVE}`)
 
     expect(goals().map(({ body }) => body.kind === 'status' && body.threadGoal)).toEqual([

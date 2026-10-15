@@ -60,6 +60,7 @@ export function journalClaudeResult(
   }
   // Read before the settle below closes it: the result reports that turn's end.
   const endedTurnScope = turn.turnScope
+  const endedTurnStartedAt = turn.startedAt
   // Read before the settle below closes the turn: an error end the journal's Stop rule makes a
   // person's cancellation is theirs to decide as the end is written (`turnEndAfterStop`).
   const turnId = settlesTurn ? turn.id : null
@@ -77,7 +78,11 @@ export function journalClaudeResult(
   }
   const goal = threadGoal.settle(
     message,
-    { backgroundWorkRunning: backgroundTasks.running, stoppedByPerson: leftToStop },
+    {
+      backgroundWorkRunning: backgroundTasks.running,
+      stoppedByPerson: leftToStop,
+      turnStartedAt: endedTurnStartedAt
+    },
     observedAt
   )
   if (goal) {
