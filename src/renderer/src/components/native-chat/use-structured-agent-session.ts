@@ -134,13 +134,8 @@ export function useStructuredAgentSession(args: {
     () => (transportState.queuedMessages ?? []).map((message) => message.messageId),
     [transportState.queuedMessages]
   )
-  const stopControl = useStructuredAgentSessionStop({
-    sessionId,
-    target,
-    transportState,
-    hostStopping,
-    mutate
-  })
+  const stopControlInput = { sessionId, target, transportState, hostStopping, mutate }
+  const stopControl = useStructuredAgentSessionStop(stopControlInput)
   const prompts = pendingStructuredSessionPrompts(transportState.journalItems)
   const promptsUnanswerableHere = pendingPromptsAllUnanswerableHere(prompts)
   // A send after a command the queue will run goes behind it, even with follow-ups off.
@@ -181,6 +176,7 @@ export function useStructuredAgentSession(args: {
 
   const { pending } = sends
   const commandWrite = useStructuredAgentSessionCommandWrite(sessionId, write)
+  const agentName = structuredAgentLabel(agent)
   const sending = pending.some((entry) => entry.phase === 'sending')
   // What the host refuses a rewind behind; a command's own hold is the runner's below.
   const conversationBusy = transportState.conversationBusy || prompts.length > 0 || sending
@@ -218,11 +214,8 @@ export function useStructuredAgentSession(args: {
   )
   // What the transcript reads: the journal plus the one notice a cut turn with no row gets.
   const transcriptItems = useMemo(
-    () =>
-      withNativeChatCutTurnNotices(transportState.journalItems, {
-        agentName: structuredAgentLabel(agent)
-      }),
-    [agent, transportState.journalItems]
+    () => withNativeChatCutTurnNotices(transportState.journalItems, { agentName }),
+    [agentName, transportState.journalItems]
   )
   const messages = useStructuredAgentSessionMessages(
     transcriptItems,
@@ -251,7 +244,7 @@ export function useStructuredAgentSession(args: {
     rewind,
     conversationCommands,
     ...structuredConversationCommandRunner({
-      agentName: structuredAgentLabel(agent),
+      agentName,
       pending: commandPending,
       // A /compact waits in line only where its card renders.
       commandsWait:
