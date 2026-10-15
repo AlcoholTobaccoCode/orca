@@ -61,7 +61,23 @@ describe('applyMobileWorkspaceLineage', () => {
         ]
       ]
     ])
+    expect(sections[0]?.data[0]?.projectContextLabel).toBeUndefined()
     expect(sections[0]?.data[1]?.projectContextLabel).toBe('Backend')
+    for (const showPinnedInGroups of [false, true]) {
+      const withPins = buildSections(
+        [child, { ...parent, isPinned: true }],
+        'name', filters, '', 'repo', new Set(), catalog,
+        undefined, new Set(), showPinnedInGroups
+      )
+      expect(withPins.map((section) => [section.key, section.data.map((row) => [
+        row.worktreeId, row.repoId, row.lineageDepth, row.projectContextLabel
+      ])])).toEqual([
+        ['pinned', [['parent', 'repo-1', 0, 'orca'], ['child', 'repo-2', 1, 'Backend']]],
+        ...(showPinnedInGroups ? [
+          ['repo:repo-1', [['parent', 'repo-1', 0, undefined], ['child', 'repo-2', 1, 'Backend']]]
+        ] : [])
+      ])
+    }
     const filtered = buildSections(
       [child, parent],
       'name',

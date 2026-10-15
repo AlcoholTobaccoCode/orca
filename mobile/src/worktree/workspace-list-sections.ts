@@ -252,18 +252,22 @@ export function buildSections(
         makeSection(
           key,
           section.label,
-          orderMainWorktreeFirst(section.items).map((w) => {
-            const ownSection = getProjectGroupingForRepo(w.repoId, repoMap, projectIndex)
-            return {
-              ...w,
-              projectContextLabel: ownSection.key !== key ? ownSection.label : undefined
-            }
-          }),
+          orderMainWorktreeFirst(section.items),
           collapsedGroups,
           { repo: section.repo }
         )
       )
     }
+    return sections.map((section) => ({
+      ...section,
+      data: section.data.map((w) => {
+        const ownSection = getProjectGroupingForRepo(w.repoId, repoMap, projectIndex)
+        return {
+          ...w,
+          projectContextLabel: ownSection.key !== section.key ? ownSection.label : undefined
+        }
+      })
+    }))
   } else if (groupMode === 'workspaceStatus') {
     const renderableWorkspaceStatuses = coerceMobileWorkspaceStatuses(workspaceStatuses)
     const byStatus = new Map<string, Worktree[]>()
