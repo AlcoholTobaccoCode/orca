@@ -69,6 +69,7 @@ export class ManagedRuntimeInstallation {
       revision,
       available: pin !== null,
       version: pin?.version ?? null,
+      ...(pin && { downloadBytes: pin.archiveBytes }),
       installedVersion: release?.version ?? null,
       installedCurrent: release?.current ?? false,
       source,

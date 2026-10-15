@@ -133,6 +133,10 @@
         "saveFailed": "Impossible d’enregistrer les paramètres de nom des chats.",
         "searchAgent": "agent",
         "searchTemplate": "modèle de commande"
+      },
+      "providers": {
+        "title": "Fournisseurs",
+        "antigravityDescription": "Les chats Antigravity utilisent un serveur qu’Orca télécharge sur cet hôte, distinct de la CLI agy."
       }
     },
     "terminal": {
@@ -19227,6 +19231,7 @@
       "cancelled": "Installation annulée.",
       "cancelling": "Annulation…",
       "chatTitle": "Installez {{agent}} pour commencer à discuter.",
+      "downloadSize": "Téléchargement de {{size}} Mo.",
       "downloading": "Téléchargement de {{done}} Mo.",
       "downloadingOf": "Téléchargement de {{done}} Mo sur {{total}} Mo.",
       "external": "Utilise une copie trouvée sur cet hôte.",
