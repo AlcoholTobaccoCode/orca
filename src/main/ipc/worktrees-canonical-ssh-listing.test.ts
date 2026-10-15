@@ -147,14 +147,16 @@ describe.each([
   })
 })
 
-it('projects known SSH worktrees across repositories on the same host', async () => {
+it.each(['git', 'folder'] as const)('projects exact known SSH %s endpoints without building foreign repos', async (kind) => {
   const { repo, store } = fixture({ connectionId: 'host-a' })
+  const parentInstance = '11111111-2222-3333-4444-555555555555'
+  const parentPath = `/remote/parent::workspace:${parentInstance}`
   const parentRepo = hydrateRepo(
-    { ...repo, id: 'parent-repo', path: '/remote/parent', displayName: 'parent' },
+    { ...repo, id: 'parent-repo', kind, path: kind === 'folder' ? '/remote/parent' : parentPath, displayName: 'parent' },
     new Map()
   )
   const childId = 'repo::/remote/repository'
-  const parentId = 'parent-repo::/remote/parent'
+  const parentId = `parent-repo::${parentPath}`
   const metaById: Record<string, WorktreeMeta> = {
     [childId]: mergeWorktreeMetaForWrite(undefined, {
       hostId: 'ssh:host-a',
@@ -163,10 +165,16 @@ it('projects known SSH worktrees across repositories on the same host', async ()
     }),
     [parentId]: mergeWorktreeMetaForWrite(undefined, {
       hostId: 'ssh:host-a',
-      instanceId: 'parent-instance',
+      instanceId: parentInstance,
       projectId: 'parent-project'
     })
   }
+  if (kind === 'folder') metaById[parentId].instanceId = undefined
+  store.setWorktreeMeta.mockImplementation((id: string, updates: Partial<WorktreeMeta>) => {
+    const meta = mergeWorktreeMetaForWrite(metaById[id], updates)
+    metaById[id] = meta
+    return meta
+  })
   Object.assign(store, {
     getRepos: () => [repo, parentRepo],
     getAllWorktreeMeta: () => metaById,
@@ -176,7 +184,7 @@ it('projects known SSH worktrees across repositories on the same host', async ()
         worktreeId: childId,
         worktreeInstanceId: 'child-instance',
         parentWorktreeId: parentId,
-        parentWorktreeInstanceId: 'parent-instance',
+        parentWorktreeInstanceId: parentInstance,
         origin: 'cli',
         capture: { source: 'explicit-cli-flag', confidence: 'explicit' },
         createdAt: 1
@@ -189,13 +197,17 @@ it('projects known SSH worktrees across repositories on the same host', async ()
     status: 'complete',
     result: { worktrees: [expect.objectContaining({ id: childId, parentWorktreeId: parentId })] }
   })
+  expect(store.setWorktreeMeta).not.toHaveBeenCalledWith(parentId, expect.anything())
   const parent = mocks.handlers.get('worktrees:listKnownForExecutionHost')!(null, {
     repoId: parentRepo.id,
     executionHostId: 'ssh:host-a'
   })
   expect(parent).toMatchObject({
     status: 'complete',
-    result: { worktrees: [expect.objectContaining({ id: parentId, childWorktreeIds: [childId] })] }
+    result: { worktrees: [
+      ...(kind === 'folder' ? [expect.objectContaining({ id: 'parent-repo::/remote/parent' })] : []),
+      expect.objectContaining({ id: parentId, childWorktreeIds: [childId] })
+    ] }
   })
 })
 

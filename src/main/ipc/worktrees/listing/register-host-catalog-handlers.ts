@@ -12,74 +12,23 @@ import type {
 } from '../../../../shared/detected-worktree-provider-contract'
 import type { DetectedWorktree } from '../../../../shared/worktree/types'
 import { isFolderRepo } from '../../../../shared/repo-kind'
-import { projectResolvedWorktreeLineage } from '../../../../shared/resolved-worktree-lineage'
+import { projectWorktreeLineageWithHostPeers } from '../../../worktree-lineage-host-peers'
 import { getRepoIdFromWorktreeId } from '../../../../shared/worktree/id'
 import { agentHookServer } from '../../../agent-hooks/server'
 import { pruneWorkspaceCleanupScanSnapshots } from '../../../workspace-cleanup-scan-snapshot'
 import { pruneWorkspaceSpaceAnalysisSnapshots } from '../../../workspace-space-analysis-snapshot'
-import {
-  findExactRepoOwner,
-  hasConflictingStoredWorktreeOwner,
-  resolveRepoOwnershipEvidence
-} from './worktree-host-ownership'
+import { findExactRepoOwner, hasConflictingStoredWorktreeOwner } from './worktree-host-ownership'
 import {
   buildDisconnectedDetectedWorktrees,
   buildFolderDetectedWorktrees
 } from './folder-workspace-catalog'
 import { isFolderWorkspaceIdForRepo } from '../folder-workspace-model'
-import { createSshWorktreeMetaIndex, listDisconnectedSshWorktrees } from './ssh-worktree-fallback'
+import {
+  createSshWorktreeMetaIndexForRepo,
+  listDisconnectedSshWorktrees
+} from './ssh-worktree-fallback'
 import type { WorktreeIpcContext } from '../worktree-ipc-context'
 import { readAllWorktreeMetaForHost } from '../../../persistence/host-qualified-worktree-meta'
-import type { Repo } from '../../../../shared/repo-types'
-import type { ExecutionHostId } from '../../../../shared/execution-host'
-
-function listProjectedKnownWorktreesForHost(
-  store: WorktreeIpcContext['store'],
-  requestedRepo: Repo,
-  hostId: ExecutionHostId
-): DetectedWorktree[] {
-  const hostMeta = readAllWorktreeMetaForHost(store, hostId)
-  const hostMetaIndex = createSshWorktreeMetaIndex(Object.entries(hostMeta))
-  const repos = store.getRepos()
-  const ownedById = new Map<string, Repo[]>()
-  const invalidRepoIds = new Set<string>()
-  for (const repo of repos) {
-    const ownership = resolveRepoOwnershipEvidence(repo)
-    if (ownership.status !== 'owned') {
-      invalidRepoIds.add(repo.id)
-    } else if (ownership.hostId === hostId) {
-      const owners = ownedById.get(repo.id) ?? []
-      owners.push(repo)
-      ownedById.set(repo.id, owners)
-    }
-  }
-  const hostRows = repos
-    .filter(
-      (repo) =>
-        !invalidRepoIds.has(repo.id) &&
-        ownedById.get(repo.id)?.length === 1 &&
-        ownedById.get(repo.id)?.[0] === repo
-    )
-    .flatMap((repo) => {
-      if (isFolderRepo(repo)) {
-        const ids = Object.keys(store.getAllWorktreeMeta()).filter((id) =>
-          isFolderWorkspaceIdForRepo(repo, id)
-        )
-        return hasConflictingStoredWorktreeOwner(store, repo, ids)
-          ? []
-          : buildFolderDetectedWorktrees(store, repo)
-      }
-      return buildDisconnectedDetectedWorktrees(
-        store,
-        repo,
-        listDisconnectedSshWorktrees(store, repo, hostMetaIndex),
-        { projectLineage: false, hostMeta }
-      )
-    })
-  return projectResolvedWorktreeLineage(hostRows, store.getAllWorktreeLineage?.() ?? {}).filter(
-    (worktree) => worktree.repoId === requestedRepo.id
-  )
-}
 
 export function registerHostCatalogHandlers(context: WorktreeIpcContext): void {
   const { store } = context
@@ -120,7 +69,6 @@ export function registerHostCatalogHandlers(context: WorktreeIpcContext): void {
           worktrees
         }
       })
-      // A host catalog spans registered repositories before projecting their parent links.
       // Folder workspace ids carry instance suffixes, so their existing builder handles them.
       if (isFolderRepo(repo)) {
         const folderWorkspaceIds = Object.keys(store.getAllWorktreeMeta()).filter((worktreeId) =>
@@ -128,9 +76,24 @@ export function registerHostCatalogHandlers(context: WorktreeIpcContext): void {
         )
         return hasConflictingStoredWorktreeOwner(store, repo, folderWorkspaceIds)
           ? rejected()
-          : complete(listProjectedKnownWorktreesForHost(store, repo, requestedExecutionHostId))
+          : complete(
+              projectWorktreeLineageWithHostPeers(
+                store,
+                repo,
+                buildFolderDetectedWorktrees(store, repo)
+              )
+            )
       }
-      return complete(listProjectedKnownWorktreesForHost(store, repo, requestedExecutionHostId))
+      const hostMeta = readAllWorktreeMetaForHost(store, requestedExecutionHostId)
+      const metaIndex = createSshWorktreeMetaIndexForRepo(hostMeta, repo.id)
+      return complete(
+        buildDisconnectedDetectedWorktrees(
+          store,
+          repo,
+          listDisconnectedSshWorktrees(store, repo, metaIndex),
+          { hostMeta }
+        )
+      )
     }
   )
 

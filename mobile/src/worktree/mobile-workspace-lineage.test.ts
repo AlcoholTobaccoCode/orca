@@ -49,20 +49,9 @@ describe('applyMobileWorkspaceLineage', () => {
     ])
     const keys = sections.flatMap((section) => section.data.map((row) => row.sectionListKey))
     expect(new Set(keys).size).toBe(keys.length)
-  })
-
-  it('breaks inherited pins at hidden intermediate projects', () => {
-    const parent = worktree({ worktreeId: 'parent', lastActivityAt: 1 })
-    const child = worktree({
-      worktreeId: 'child', repoId: 'repo-2', parentWorktreeId: 'parent', lastActivityAt: 100
-    })
-    const grandchild = worktree({
-      worktreeId: 'grandchild', repoId: 'repo-3', parentWorktreeId: 'child', lastActivityAt: 50
-    })
-    const filters = { filterRepoIds: new Set<string>(), hideSleeping: false, hideDefaultBranch: false }
     const filtered = buildSections(
-      [{ ...parent, isPinned: true }, child, grandchild], 'name',
-      { ...filters, filterRepoIds: new Set(['repo-1', 'repo-3']) }, '', 'repo', new Set(), NO_PROJECT_SECTION_CATALOG
+      [parent, child, { ...grandchild, repoId: 'repo-3' }], 'name',
+      { ...filters, filterRepoIds: new Set(['repo-1', 'repo-3']) }, '', 'repo', new Set()
     )
     expect(filtered.map((section) => [section.key, section.data.map((row) => [row.worktreeId, row.lineageDepth])]))
       .toEqual([['pinned', [['parent', 0]]], ['repo:repo-3', [['grandchild', 0]]]])

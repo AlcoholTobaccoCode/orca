@@ -125,7 +125,7 @@ export function buildDisconnectedDetectedWorktrees(
   store: Store,
   repo: Repo,
   worktrees: Worktree[],
-  options: { projectLineage?: boolean; hostMeta?: Record<string, WorktreeMeta> } = {}
+  options: { hostMeta?: Record<string, WorktreeMeta> } = {}
 ): DetectedWorktree[] {
   const settings = store.getSettings()
   const hostId = getRepoExecutionHostId(repo)
@@ -148,7 +148,5 @@ export function buildDisconnectedDetectedWorktrees(
     })
     return applyMetadataFallbackVisibility(detected)
   })
-  return options.projectLineage === false
-    ? detected
-    : projectWorktreeLineageWithHostPeers(store, repo, detected)
+  return projectWorktreeLineageWithHostPeers(store, repo, detected)
 }
