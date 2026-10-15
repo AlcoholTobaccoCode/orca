@@ -28,7 +28,6 @@ afterEach(() => {
 
 const STOPPED: AiVaultScanProgress = {
   scanId: 'scan-a',
-  scanKey: 'scope-a',
   stage: 'stopped',
   agents: [
     { agent: 'claude', files: 24_968, databases: 0, walking: false },
@@ -61,7 +60,7 @@ it('keeps a narrower cached panel off the broader key while a late matching pane
   const broader = aiVaultLocalScanKey({ ...lowerDepth, limit: 1000 })
   const narrower = aiVaultLocalScanKey(lowerDepth)
   expect(broader).not.toBe(narrower)
-  const cachedProgress: AiVaultScanProgress = { ...STOPPED, stage: 'finished', scanKey: broader }
+  const cachedProgress: AiVaultScanProgress = { ...STOPPED, stage: 'finished' }
   let push: (update: { scanKey: string; progress: AiVaultScanProgress | null }) => void = () =>
     undefined
   vi.stubGlobal('api', {
@@ -125,8 +124,7 @@ it('keeps each key’s failure and shows settled progress only with its applied 
     sessions: [],
     issues: [issue],
     scannedAt: new Date(1_000).toISOString(),
-    scanId: 'scan-a-old',
-    scanKey: 'scope-a'
+    scanId: 'scan-a-old'
   }
   function Panel({ scanKey, result }: { scanKey: string; result: AiVaultListResult | null }) {
     const progress = useAiVaultScanProgress('local', scanKey, result?.scanId)
@@ -146,7 +144,7 @@ it('keeps each key’s failure and shows settled progress only with its applied 
   const b = render(<Panel scanKey="scope-b" result={null} />)
   const aView = within(a.container)
   const bView = within(b.container)
-  const other = { ...STOPPED, scanId: 'scan-b', scanKey: 'scope-b' }
+  const other = { ...STOPPED, scanId: 'scan-b' }
   act(() => push({ scanKey: 'scope-b', progress: { ...other, stage: 'finding' } }))
   expect(aView.getByText('Local scan failed.')).toBeTruthy()
   expect(bView.getByText('Scanning', { exact: false })).toBeTruthy()
@@ -202,21 +200,16 @@ it('keeps each key’s failure and shows settled progress only with its applied 
     includeAntigravityIdeSessions: true,
     limit: 500
   })
-  const narrowStop = { ...STOPPED, scanId: 'scan-narrow', scanKey: narrowKey }
+  const narrowStop = { ...STOPPED, scanId: 'scan-narrow' }
   act(() => push({ scanKey: narrowKey, progress: narrowStop }))
-  a.rerender(
-    <Panel
-      scanKey={narrowKey}
-      result={{ ...failed, scanId: narrowStop.scanId, scanKey: narrowKey }}
-    />
-  )
+  a.rerender(<Panel scanKey={narrowKey} result={{ ...failed, scanId: narrowStop.scanId }} />)
   expect(aView.getByText('Stopped after', { exact: false })).toBeTruthy()
 
-  const broadSuccess = { ...firstSuccess, scanId: 'scan-broad', scanKey: broadKey }
+  const broadSuccess = { ...firstSuccess, scanId: 'scan-broad' }
   act(() =>
     push({
       scanKey: broadKey,
-      progress: { ...STOPPED, scanId: broadSuccess.scanId, scanKey: broadKey, stage: 'finished' }
+      progress: { ...STOPPED, scanId: broadSuccess.scanId, stage: 'finished' }
     })
   )
   cacheAiVaultSessionList(broadRequest, broadSuccess, { replaceHostEntries: false })
@@ -230,10 +223,7 @@ it('keeps each key’s failure and shows settled progress only with its applied 
   act(() => push({ scanKey: narrowKey, progress: narrowFinish }))
   expect(aView.queryByText('Scanned', { exact: false })).toBeNull()
   a.rerender(
-    <Panel
-      scanKey={narrowKey}
-      result={{ ...firstSuccess, scanId: narrowFinish.scanId, scanKey: narrowKey }}
-    />
+    <Panel scanKey={narrowKey} result={{ ...firstSuccess, scanId: narrowFinish.scanId }} />
   )
   expect(aView.getByText('Scanned', { exact: false })).toBeTruthy()
 })
