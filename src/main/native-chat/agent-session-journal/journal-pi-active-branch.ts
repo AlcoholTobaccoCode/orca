@@ -3,20 +3,22 @@ import type { NativeChatMessage } from '../../../shared/native-chat-types'
 import { asRecord, parseJsonObject, timestampMs } from '../../ai-vault/session-scanner-values'
 import { decodeOmpTranscriptLine } from '../transcript-line-decoders-omp'
 
-type PiTranscriptBranchEntry = {
+type PiTranscriptBranchEntry<T> = {
   id: string
   parentId: string | null
   type: unknown
   firstKeptEntryId: string | null
-  message: NativeChatMessage | null
-  identity: AgentJournalItemIdentity
+  item: T | null
 }
 
-export function createPiTranscriptCollector(): {
+/** `toItem` runs as each line is read, so an entry holds only what the caller keeps of it. */
+export function createPiTranscriptCollector<T>(
+  toItem: (message: NativeChatMessage, identity: AgentJournalItemIdentity) => T
+): {
   record(line: string, fallbackId: string, identity: AgentJournalItemIdentity): void
-  project(): { messages: NativeChatMessage[]; identities: AgentJournalItemIdentity[] }
+  project(): T[]
 } {
-  const entries: PiTranscriptBranchEntry[] = []
+  const entries: PiTranscriptBranchEntry<T>[] = []
   const fileEntryIds: (string | null)[] = []
   let version = 1
   return {
@@ -51,8 +53,7 @@ export function createPiTranscriptCollector(): {
         parentId,
         type: record.type,
         firstKeptEntryId: typeof firstKeptEntryId === 'string' ? firstKeptEntryId : null,
-        message,
-        identity
+        item: message ? toItem(message, identity) : null
       })
       fileEntryIds.push(id)
     },
@@ -79,15 +80,12 @@ function piSummaryMessage(
 }
 
 /** Match Pi's fresh-session TUI: persisted leaf ancestry, then buildContextEntries. */
-function selectActivePiBranch(entries: readonly PiTranscriptBranchEntry[]): {
-  messages: NativeChatMessage[]
-  identities: AgentJournalItemIdentity[]
-} {
+function selectActivePiBranch<T>(entries: readonly PiTranscriptBranchEntry<T>[]): T[] {
   const byId = new Map(entries.map((entry) => [entry.id, entry]))
   if (byId.size !== entries.length) {
     throw new Error('Pi session has duplicate branch identities')
   }
-  const branch: PiTranscriptBranchEntry[] = []
+  const branch: PiTranscriptBranchEntry<T>[] = []
   const visited = new Set<string>()
   let current = entries.at(-1)
   while (current) {
@@ -98,18 +96,10 @@ function selectActivePiBranch(entries: readonly PiTranscriptBranchEntry[]): {
     branch.push(current)
     current = current.parentId ? byId.get(current.parentId) : undefined
   }
-  const messages: NativeChatMessage[] = []
-  const identities: AgentJournalItemIdentity[] = []
-  for (const entry of compactedPiBranch(branch.toReversed())) {
-    if (entry.message) {
-      messages.push(entry.message)
-      identities.push(entry.identity)
-    }
-  }
-  return { messages, identities }
+  return compactedPiBranch(branch.toReversed()).flatMap((entry) => (entry.item === null ? [] : [entry.item]))
 }
 
-function compactedPiBranch(branch: PiTranscriptBranchEntry[]): PiTranscriptBranchEntry[] {
+function compactedPiBranch<T>(branch: PiTranscriptBranchEntry<T>[]): PiTranscriptBranchEntry<T>[] {
   const compactionIndex = branch.findLastIndex((entry) => entry.type === 'compaction')
   const compaction = branch[compactionIndex]
   if (!compaction) {
