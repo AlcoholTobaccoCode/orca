@@ -197,8 +197,9 @@ describe('Claude /goal journaling', () => {
   })
 
   it('keeps a goal set before a restart open through a status reply, and clears it on /goal clear', () => {
+    const objective = 'Ship (2 turns) then go'
     const { reply, result, goals } = goalSink({
-      objective: OBJECTIVE,
+      objective,
       status: 'active',
       tokenBudget: null,
       tokensUsed: 0,
@@ -207,12 +208,15 @@ describe('Claude /goal journaling', () => {
       updatedAt: 1
     })
     // A bare `/goal` runs no model turn, so its clean end says nothing about the goal.
-    reply('status', '<synthetic>', `Goal active: ${OBJECTIVE} (not yet evaluated)`)
+    reply('status', '<synthetic>', `Goal active: ${objective} (not yet evaluated)`)
     result('status-result', { subtype: 'success', is_error: false, num_turns: 0 })
-    reply('clear', '<synthetic>', `Goal cleared: ${OBJECTIVE}`)
+    reply('clear', '<synthetic>', `Goal cleared: ${objective}`)
 
     expect(goals().map(({ body }) => body.kind === 'status' && body.threadGoal)).toEqual([
-      { state: 'set', goal: expect.objectContaining({ status: 'active', timeUsedSeconds: 30 }) },
+      {
+        state: 'set',
+        goal: expect.objectContaining({ objective, status: 'active', timeUsedSeconds: 30 })
+      },
       { state: 'cleared' }
     ])
   })

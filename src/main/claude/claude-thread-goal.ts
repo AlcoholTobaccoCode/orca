@@ -17,7 +17,7 @@ import { isRootClaudeFrame } from './claude-turn-opening'
 import type { ClaudeGoalBackgroundWork } from './claude-background-task-tracker'
 
 const GOAL_SET = 'Goal set: '
-const GOAL_ACTIVE = /^Goal active: ([\s\S]+?) \((?:not yet evaluated|\d+ turns?)\)/u
+const GOAL_ACTIVE = /^Goal active: ([\s\S]+) \((?:not yet evaluated|\d+ turns?)\)$/u
 
 type GoalStatusBody = Extract<AgentJournalItemBody, { kind: 'status' }>
 type GoalReport = { kind: 'set'; objective: string } | { kind: 'cleared' }
