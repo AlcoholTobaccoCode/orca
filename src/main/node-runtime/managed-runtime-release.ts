@@ -3,6 +3,7 @@
 // cheap enough for every launch: a full hash is only ever taken by an install.
 
 import { lstatSync, readFileSync, readdirSync } from 'node:fs'
+import { readdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { z } from 'zod'
 
@@ -74,6 +75,20 @@ export function resolveInstalledRuntimeRelease(
   return chosen
     ? { folder: join(root, chosen.name), version: chosen.name, current: chosen === pinned }
     : null
+}
+
+/** Removes everything under `root` but the release named `keep`: called only while the caller
+ *  owns every install and launch of this runtime, so nothing else runs from or publishes into it.
+ *  Answers the entries it could not remove. */
+export async function reclaimRuntimeReleases(root: string, keep: string | null): Promise<string[]> {
+  const names = await readdir(root).catch((error: NodeJS.ErrnoException) =>
+    error.code === 'ENOENT' ? [] : Promise.reject(error)
+  )
+  const stale = names.filter((name) => name !== keep)
+  const results = await Promise.allSettled(
+    stale.map((name) => rm(join(root, name), { recursive: true, force: true }))
+  )
+  return stale.filter((_, index) => results[index]?.status === 'rejected')
 }
 
 /** The receipt's release id when `folder` is a whole release for this host, else null. */
