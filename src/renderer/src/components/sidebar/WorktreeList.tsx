@@ -131,6 +131,7 @@ const WorktreeList = React.memo(function WorktreeList({
     pinnedDisplayPolicy,
     worktrees: allWorktrees,
     visibleWorktrees,
+    filterRepoIds: filterState.filterRepoIds,
     repoMap,
     worktreeMap,
     worktreeLineageById,

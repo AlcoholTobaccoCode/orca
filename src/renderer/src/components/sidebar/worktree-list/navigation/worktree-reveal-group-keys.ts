@@ -8,7 +8,11 @@ import type { Repo } from '../../../../../../shared/repo-types'
 import type { WorktreeLineage } from '../../../../../../shared/worktree/lineage-types'
 import type { WorkspaceStatusDefinition, Worktree } from '../../../../../../shared/worktree/types'
 import { getHostSectionCollapseKey } from '../../host-section-collapse'
-import { isPinnedSectionWorktree } from '../../pinned-section-worktrees'
+import {
+  getPinnedSectionWorktrees,
+  getTopVisibleLineageAncestorByIdentity
+} from '../../pinned-section-worktrees'
+import { getWorktreeHostIdentity } from '../../../../../../shared/worktree/host-qualified-identity'
 import {
   getHostScopedWorktreeLineageInputs,
   getWorktreeLineageAncestors
@@ -22,6 +26,7 @@ export function getWorktreeRevealCollapsedGroupKeys(args: {
   worktree: Worktree
   worktrees: readonly Worktree[]
   visibleWorktrees?: readonly Worktree[]
+  filterRepoIds?: readonly string[]
   worktreeLineageById: Readonly<Record<string, WorktreeLineage>>
   repoMap: Map<string, Repo>
   defaultHostId: ExecutionHostId
@@ -55,21 +60,33 @@ export function getWorktreeRevealCollapsedGroupKeys(args: {
   ]
   const sectionKey = (key: string) =>
     args.hostScopedGroups ? getHostSectionCollapseKey(key, hostId) : key
+  const visibleWorktrees = args.visibleWorktrees ?? args.worktrees
+  const pinnedIdentities = new Set(
+    getPinnedSectionWorktrees(
+      visibleWorktrees,
+      hostLineage.lineageById,
+      hostLineage.worktreeMap,
+      args.filterRepoIds
+    ).map(getWorktreeHostIdentity)
+  )
   if (
     args.pinnedDisplayPolicy === 'single-location' &&
-    isPinnedSectionWorktree(
-      args.worktree,
-      args.visibleWorktrees ?? args.worktrees,
-      hostLineage.lineageById,
-      hostLineage.worktreeMap
-    )
+    pinnedIdentities.has(getWorktreeHostIdentity(args.worktree))
   ) {
     keys.push(sectionKey(PINNED_GROUP_KEY))
   } else {
+    const naturalWorktrees = args.pinnedDisplayPolicy === 'duplicate-in-groups'
+      ? visibleWorktrees
+      : visibleWorktrees.filter((row) => !pinnedIdentities.has(getWorktreeHostIdentity(row)))
+    const sectionWorktree = args.groupBy === 'repo'
+      ? getTopVisibleLineageAncestorByIdentity(
+          naturalWorktrees, hostLineage.lineageById, hostLineage.worktreeMap
+        ).get(getWorktreeHostIdentity(args.worktree)) ?? args.worktree
+      : args.worktree
     keys.push(
       ...getGroupKeysForWorktree(
         args.groupBy,
-        args.worktree,
+        sectionWorktree,
         args.repoMap,
         args.prCache,
         args.workspaceStatuses,

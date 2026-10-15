@@ -49,6 +49,8 @@ export type ProjectSectionRepo = {
 export type ProjectSectionEntry<Item, R extends ProjectSectionRepo = Repo> = {
   label: string
   items: Item[]
+  /** Owning-project activity, when display placement files rows under another project. */
+  activityItems?: readonly Item[]
   repo?: R
   repoIds: Set<string>
 }
@@ -250,6 +252,7 @@ export function buildProjectSections<
 >(args: {
   items: readonly Item[]
   repoIdOf: (item: Item) => string
+  displayRepoIdOf?: (item: Item) => string
   repoMap: ReadonlyMap<string, R>
   projectIndex: ProjectGroupingIndex | null
   placeholderRepoIds: Iterable<string>
@@ -260,8 +263,16 @@ export function buildProjectSections<
 }): [string, ProjectSectionEntry<Item, R>][] {
   const { repoMap, projectIndex } = args
   const sections = new Map<string, ProjectSectionEntry<Item, R>>()
+  const activityBySection = new Map<string, Item[]>()
   for (const item of args.items) {
-    addItemToProjectSection(sections, item, args.repoIdOf(item), repoMap, projectIndex)
+    const repoId = args.repoIdOf(item)
+    const key = getProjectGroupingForRepo(repoId, repoMap, projectIndex).key
+    const activity = activityBySection.get(key) ?? []
+    activity.push(item)
+    activityBySection.set(key, activity)
+    addItemToProjectSection(
+      sections, item, args.displayRepoIdOf?.(item) ?? repoId, repoMap, projectIndex
+    )
   }
   // Why: repos can arrive before worktree scans, but stale IDs passed by
   // older snapshots must not render an "Unknown" project header.
@@ -277,6 +288,9 @@ export function buildProjectSections<
   // ensure one so the in-progress row nests under its repo instead of being dropped.
   for (const repoId of args.pendingRepoIds ?? []) {
     ensureProjectSectionForRepo(sections, repoId, repoMap, projectIndex)
+  }
+  for (const [key, section] of sections) {
+    section.activityItems = activityBySection.get(key) ?? []
   }
   return orderProjectSections(sections, repoMap, args.repoOrder, args.projectOrderBy)
 }

@@ -6,6 +6,8 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import type { ButtonHTMLAttributes, ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Repo } from '../../../../shared/repo-types'
+import type { Project, ProjectHostSetup } from '../../../../shared/project-types'
+import { project, projectHostSetups, repo } from './worktree-list-groups-test-fixtures'
 import type { WorktreeLineage } from '../../../../shared/worktree/lineage-types'
 import type { WorktreeRemovalTarget } from '../../../../shared/worktree/removal'
 import type { Worktree } from '../../../../shared/worktree/types'
@@ -19,6 +21,8 @@ const mocks = vi.hoisted(() => {
     clearWorktreeDeleteState: vi.fn(),
     allWorktrees: vi.fn<() => Worktree[]>(() => []),
     repos: [] as Repo[],
+    projects: [] as Project[],
+    projectHostSetups: [] as ProjectHostSetup[],
     worktreeLineageById: {} as Record<string, WorktreeLineage>,
     updateSettings: vi.fn(),
     openSettingsTarget: vi.fn(),
@@ -177,6 +181,8 @@ describe('DeleteWorktreeDialog lineage copy', () => {
     mocks.state.modalData = {}
     mocks.state.allWorktrees.mockReturnValue([])
     mocks.state.repos = []
+    mocks.state.projects = []
+    mocks.state.projectHostSetups = []
     mocks.state.sshTargetLabels = new Map()
     mocks.state.sshConnectionStates = new Map()
     mocks.state.runtimeEnvironments = []
@@ -313,6 +319,24 @@ describe('DeleteWorktreeDialog lineage copy', () => {
     expect(markup).toContain('mt-2 min-w-0 max-w-full space-y-1 overflow-hidden')
     expect(markup).toContain('min-w-0 overflow-hidden')
     expect(markup).toContain('truncate text-muted-foreground')
+  })
+
+  it('names a different checkout of the same project in the delete disclosure', async () => {
+    const checkout = { ...repo, id: 'second-checkout', displayName: 'Second checkout', path: '/second' }
+    mocks.state.projects = [project]
+    mocks.state.projectHostSetups = [repo, checkout].map((entry) => ({
+      ...projectHostSetups[0]!, id: entry.id, repoId: entry.id, path: entry.path
+    }))
+    const parent = { ...makeWorktree('parent', '/parent'), repoId: repo.id }
+    const child = { ...makeWorktree('child', '/child'), repoId: checkout.id }
+    const { DeleteWorktreeLineageNotice } = await import('./DeleteWorktreeLineageNotice')
+    const markup = renderToStaticMarkup(<DeleteWorktreeLineageNotice
+      parent={parent} descendants={[child]}
+      repoMap={new Map([[repo.id, repo], [checkout.id, checkout]])}
+      dirtyChangeCountsByWorktreeId={new Map()} dirtyChangePreviewsByWorktreeId={new Map()}
+    />)
+    expect(visibleMarkupText(markup)).toContain('(Second checkout)')
+    expect(visibleMarkupText(markup)).toContain('child · Second checkout')
   })
 
   it('uses non-destructive disk copy for folder workspace deletes', async () => {

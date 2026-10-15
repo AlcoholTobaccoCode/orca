@@ -84,7 +84,8 @@ export function buildOrderedGroups(args: {
     // Why shared: the paired phone builds its Project sections with this same function.
     return buildProjectSections({
       items: naturalWorktrees,
-      repoIdOf: (worktree) =>
+      repoIdOf: (worktree) => worktree.repoId,
+      displayRepoIdOf: (worktree) =>
         (displayRootByIdentity?.get(getWorktreeHostIdentity(worktree)) ?? worktree).repoId,
       repoMap,
       projectIndex,

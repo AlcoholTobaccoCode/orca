@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import type { WorktreeLineage } from '../../../../../../shared/worktree/lineage-types'
 import type { Worktree } from '../../../../../../shared/worktree/types'
-import { repo, worktree } from '../../worktree-list-groups-test-fixtures'
+import { repo, worktree, project, projectHostSetups } from '../../worktree-list-groups-test-fixtures'
+import { makeProjectGroup } from '../../folder-workspace-composer-submit-fixtures'
+import { getWorktreeRevealCollapsedGroupKeys } from '../navigation/worktree-reveal-group-keys'
 import { buildRows } from './build-rows'
 
 const childRepo = { ...repo, id: 'child-repo', displayName: 'Child project', path: '/tmp/child' }
@@ -38,6 +40,67 @@ const worktreeMap = new Map([
 ])
 
 describe('cross-project sidebar lineage', () => {
+  it('keeps separate checkout context when both rows belong to one project', () => {
+    const grouping = {
+      projects: [project],
+      projectHostSetups: [repo, childRepo].map((checkout) => ({
+        ...projectHostSetups[0]!,
+        id: checkout.id,
+        repoId: checkout.id,
+        path: checkout.path,
+        displayName: checkout.displayName
+      }))
+    }
+    const rows = buildRows(
+      'repo', [child, parent], repos, null, new Set(), undefined, undefined, undefined,
+      lineageById, worktreeMap, true, undefined, [], new Set(), new Map(), new Map(), [], grouping
+    )
+    expect(rows.filter((row) => row.type === 'item').map((row) => row.projectContextLabel))
+      .toEqual([undefined, childRepo.displayName])
+  })
+
+  it('ranks Recent by owning-project activity while keeping children in the displayed section', () => {
+    const gammaRepo = { ...repo, id: 'gamma', displayName: 'Gamma' }
+    const rows = buildRows(
+      'repo',
+      [
+        { ...parent, lastActivityAt: 1 },
+        { ...child, lastActivityAt: 100 },
+        { ...worktree, id: 'other-beta', repoId: childRepo.id, lastActivityAt: 2 },
+        { ...worktree, id: 'gamma', repoId: gammaRepo.id, lastActivityAt: 50 }
+      ],
+      new Map([...repos, [gammaRepo.id, gammaRepo]]),
+      null, new Set(), undefined, undefined, 'recent', lineageById, worktreeMap, true
+    )
+    expect(rows.filter((row) => row.type === 'header').map((row) => row.repo?.id))
+      .toEqual([childRepo.id, gammaRepo.id, repo.id])
+    expect(rows.find((row) => row.type === 'item' && row.worktree.id === child.id))
+      .toMatchObject({ sectionKey: `repo:${repo.id}`, depth: 1 })
+  })
+
+  it.each(['single-location', 'duplicate-in-groups'] as const)(
+    'reveals the displayed ancestor section and its custom project groups (%s)',
+    (pinnedDisplayPolicy) => {
+      const group = makeProjectGroup()
+      const parentRepo = { ...repo, projectGroupId: group.id }
+      const shownParent = { ...parent, isPinned: pinnedDisplayPolicy === 'duplicate-in-groups' }
+      const collapsedGroups = new Set([
+        `repo:${repo.id}`, `repo:${childRepo.id}`, `project-group:${group.id}`,
+        'workspace-lineage:parent'
+      ])
+      const keys = getWorktreeRevealCollapsedGroupKeys({
+        worktree: child, worktrees: [shownParent, child], worktreeLineageById: lineageById,
+        repoMap: new Map([...repos, [repo.id, parentRepo]]), defaultHostId: 'local',
+        hostScopedGroups: false, collapsedGroups, groupBy: 'repo', pinnedDisplayPolicy,
+        prCache: null, workspaceStatuses: [], settings: null, projectGroups: [group]
+      })
+      expect(keys).toEqual(expect.arrayContaining([
+        `repo:${repo.id}`, `project-group:${group.id}`, 'workspace-lineage:parent'
+      ]))
+      expect(keys).not.toContain(`repo:${childRepo.id}`)
+    }
+  )
+
   it('nests under the visible parent while project actions keep real repository ownership', () => {
     const rows = buildRows(
       'repo',

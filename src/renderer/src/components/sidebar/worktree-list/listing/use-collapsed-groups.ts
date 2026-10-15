@@ -20,6 +20,7 @@ export function useEffectiveCollapsedGroups(args: {
   pinnedDisplayPolicy: PinnedWorktreeDisplayPolicy
   worktrees: readonly Worktree[]
   visibleWorktrees: readonly Worktree[]
+  filterRepoIds?: readonly string[]
   repoMap: Map<string, Repo>
   worktreeMap: Map<string, Worktree>
   worktreeLineageById: Record<string, WorktreeLineage>
@@ -39,6 +40,7 @@ export function useEffectiveCollapsedGroups(args: {
     pinnedDisplayPolicy,
     worktrees,
     visibleWorktrees,
+    filterRepoIds,
     repoMap,
     worktreeMap,
     worktreeLineageById,
@@ -78,6 +80,7 @@ export function useEffectiveCollapsedGroups(args: {
       worktree: targetWorktree,
       worktrees,
       visibleWorktrees,
+      filterRepoIds,
       worktreeLineageById,
       repoMap,
       defaultHostId,
@@ -102,6 +105,7 @@ export function useEffectiveCollapsedGroups(args: {
     pinnedDisplayPolicy,
     worktrees,
     visibleWorktrees,
+    filterRepoIds,
     prCache,
     projectGroups,
     projectGrouping,

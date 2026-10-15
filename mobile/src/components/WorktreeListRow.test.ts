@@ -139,6 +139,18 @@ describe('memoized worktree rows', () => {
     renderer = null
   })
 
+  it('shows the owning project for a foreign child inside a project section', async () => {
+    await act(async () => {
+      renderer = create(createElement(WorktreeListRow, {
+        item: { ...baseItem, projectContextLabel: 'Backend checkout', lineageDepth: 1 },
+        isReadOnly: false, now: 2_000, repoColor: '#000000', hideRepo: true,
+        status: 'active', onPress: () => undefined
+      }))
+    })
+    expect(renderer!.root.findAllByType(Text).map((node) => node.props.children))
+      .toContain('Backend checkout')
+  })
+
   it('skips an unrelated parent render but updates for live item fields and time', async () => {
     await act(async () => {
       renderer = create(createElement(ListRowHarness, { item: baseItem, now: 2_000 }))

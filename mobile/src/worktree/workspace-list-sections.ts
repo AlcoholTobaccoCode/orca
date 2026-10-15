@@ -21,6 +21,7 @@ import { getWorktreeRowIdentity } from './worktree-host-row-identity'
 import {
   buildProjectGroupingIndex,
   buildProjectSections,
+  getProjectGroupingForRepo,
   type ProjectSectionModel
 } from '../../../src/shared/project-section-grouping'
 import { withRepoSectionDisplayLabels } from '../../../src/shared/project-section-order'
@@ -188,7 +189,11 @@ export function buildSections(
   const filtered = filterWorktrees(worktrees, filters, search)
   const sorted = sortWorktrees(filtered, sortMode)
 
-  const childrenByParentIdentity = getMobileWorkspaceLineageChildren(worktrees)
+  const childrenByParentIdentity = getMobileWorkspaceLineageChildren(
+    filters.filterRepoIds.size > 0
+      ? worktrees.filter((w) => filters.filterRepoIds.has(w.repoId))
+      : worktrees
+  )
   const pinnedIdentities = new Set(
     getVisibleLineagePlacement(
       sorted,
@@ -227,13 +232,16 @@ export function buildSections(
           (!query || repo.displayName.toLowerCase().includes(query))
       )
       .map((repo) => repo.id)
+    const repoMap = buildSectionRepoMap(projectCatalog.repos, worktrees)
+    const projectIndex = buildProjectGroupingIndex(projectCatalog.grouping ?? undefined)
     // Why: the desktop sidebar's own grouping, so keys, labels and order match it.
     const projectSections = withRepoSectionDisplayLabels(
       buildProjectSections({
         items: canonicalGroupWorktrees,
-        repoIdOf: (w) => (displayRootByIdentity.get(getWorktreeRowIdentity(w)) ?? w).repoId,
-        repoMap: buildSectionRepoMap(projectCatalog.repos, worktrees),
-        projectIndex: buildProjectGroupingIndex(projectCatalog.grouping ?? undefined),
+        repoIdOf: (w) => w.repoId,
+        displayRepoIdOf: (w) => (displayRootByIdentity.get(getWorktreeRowIdentity(w)) ?? w).repoId,
+        repoMap,
+        projectIndex,
         placeholderRepoIds,
         repoOrder: projectCatalog.repoOrder,
         projectOrderBy: projectCatalog.projectOrderBy
@@ -241,9 +249,19 @@ export function buildSections(
     )
     for (const [key, section] of projectSections) {
       sections.push(
-        makeSection(key, section.label, orderMainWorktreeFirst(section.items), collapsedGroups, {
-          repo: section.repo
-        })
+        makeSection(
+          key,
+          section.label,
+          orderMainWorktreeFirst(section.items).map((w) => {
+            const ownSection = getProjectGroupingForRepo(w.repoId, repoMap, projectIndex)
+            return {
+              ...w,
+              projectContextLabel: ownSection.key !== key ? ownSection.label : undefined
+            }
+          }),
+          collapsedGroups,
+          { repo: section.repo }
+        )
       )
     }
   } else if (groupMode === 'workspaceStatus') {

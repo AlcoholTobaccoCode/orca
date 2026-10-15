@@ -25,17 +25,19 @@ export function getSidebarLineageRowsByIdentity(
 function getSidebarLineageChildren(
   worktrees: readonly Worktree[],
   lineageById: Readonly<Record<string, WorktreeLineage>>,
-  worktreeMap: ReadonlyMap<string, Worktree>
+  worktreeMap: ReadonlyMap<string, Worktree>,
+  filterRepoIds: readonly string[] = []
 ): Map<string, Worktree[]> {
   const rowsByIdentity = getSidebarLineageRowsByIdentity(worktrees, worktreeMap)
+  const allowedRepoIds = filterRepoIds.length > 0 ? new Set(filterRepoIds) : null
   const cyclicIds = getCyclicProjectedWorktreeLineageIds(lineageById, worktreeMap)
   const childrenByParentIdentity = new Map<string, Worktree[]>()
   for (const child of rowsByIdentity.values()) {
-    if (cyclicIds.has(child.id)) {
+    if (cyclicIds.has(child.id) || (allowedRepoIds && !allowedRepoIds.has(child.repoId))) {
       continue
     }
     const parent = getSidebarLineageParent(child, lineageById, rowsByIdentity)
-    if (!parent) {
+    if (!parent || (allowedRepoIds && !allowedRepoIds.has(parent.repoId))) {
       continue
     }
     const identity = getWorktreeHostIdentity(parent)
@@ -64,12 +66,13 @@ export function getTopVisibleLineageAncestorByIdentity(
 export function getPinnedSectionWorktrees(
   worktrees: readonly Worktree[],
   lineageById: Readonly<Record<string, WorktreeLineage>>,
-  worktreeMap: ReadonlyMap<string, Worktree>
+  worktreeMap: ReadonlyMap<string, Worktree>,
+  filterRepoIds: readonly string[] = []
 ): Worktree[] {
   const placement = getVisibleLineagePlacement(
     worktrees,
     worktrees.filter((worktree) => worktree.isPinned),
-    getSidebarLineageChildren(worktrees, lineageById, worktreeMap),
+    getSidebarLineageChildren(worktrees, lineageById, worktreeMap, filterRepoIds),
     getWorktreeHostIdentity,
     true
   )
@@ -80,13 +83,14 @@ export function isPinnedSectionWorktree(
   worktree: Worktree,
   visibleWorktrees: readonly Worktree[],
   lineageById: Readonly<Record<string, WorktreeLineage>>,
-  worktreeMap: ReadonlyMap<string, Worktree>
+  worktreeMap: ReadonlyMap<string, Worktree>,
+  filterRepoIds: readonly string[] = []
 ): boolean {
   if (worktree.isPinned) {
     return true
   }
   const identity = getWorktreeHostIdentity(worktree)
-  return getPinnedSectionWorktrees(visibleWorktrees, lineageById, worktreeMap).some(
+  return getPinnedSectionWorktrees(visibleWorktrees, lineageById, worktreeMap, filterRepoIds).some(
     (candidate) => getWorktreeHostIdentity(candidate) === identity
   )
 }

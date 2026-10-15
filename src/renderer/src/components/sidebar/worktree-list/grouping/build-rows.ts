@@ -75,7 +75,8 @@ export function buildRows(
   folderWorkspaces: readonly FolderWorkspace[] = [],
   hostLabelById?: ReadonlyMap<string, string>,
   defaultHostId: ExecutionHostId = LOCAL_EXECUTION_HOST_ID,
-  pinnedDisplayPolicy: PinnedWorktreeDisplayPolicy = getPinnedWorktreeDisplayPolicy(settings)
+  pinnedDisplayPolicy: PinnedWorktreeDisplayPolicy = getPinnedWorktreeDisplayPolicy(settings),
+  filterRepoIds: readonly string[] = []
 ): Row[] {
   const result: Row[] = []
   const projectIndex = buildProjectGroupingIndex(projectGrouping)
@@ -104,7 +105,7 @@ export function buildRows(
   }
 
   const pinnedSectionWorktrees = nestLineage
-    ? getPinnedSectionWorktrees(worktrees, lineageById, worktreeMap)
+    ? getPinnedSectionWorktrees(worktrees, lineageById, worktreeMap, filterRepoIds)
     : worktrees.filter((worktree) => worktree.isPinned)
   const pinnedSectionIds = new Set(pinnedSectionWorktrees.map(getWorktreeHostIdentity))
   const naturalWorktrees =

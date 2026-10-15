@@ -47,7 +47,7 @@ export function DeleteWorktreeLineageNotice({
     const parentGroup = getProjectGroupingForRepo(parent.repoId, repoMap, projectIndex)
     for (const child of descendants) {
       const childGroup = getProjectGroupingForRepo(child.repoId, repoMap, projectIndex)
-      if ((childGroup.projectId ?? child.repoId) !== (parentGroup.projectId ?? parent.repoId)) {
+      if (childGroup.key !== parentGroup.key) {
         projectLabels.set(child.id, childGroup.label)
       }
     }

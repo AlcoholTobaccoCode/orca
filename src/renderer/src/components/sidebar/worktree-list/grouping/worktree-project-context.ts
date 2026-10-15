@@ -24,7 +24,5 @@ export function getWorktreeProjectContextLabel(
   }
   const project = getProjectGroupingForRepo(worktree.repoId, repoMap, projectIndex)
   const parentProject = getProjectGroupingForRepo(parent.repoId, repoMap, projectIndex)
-  return (project.projectId ?? worktree.repoId) === (parentProject.projectId ?? parent.repoId)
-    ? undefined
-    : project.label
+  return project.key === parentProject.key ? undefined : project.label
 }

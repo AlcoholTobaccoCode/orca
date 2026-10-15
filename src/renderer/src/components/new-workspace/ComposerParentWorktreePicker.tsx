@@ -389,9 +389,10 @@ function ParentWorktreeCandidateList({
                     <div className="mt-1 flex min-w-0 items-center gap-1.5 text-[11px] leading-none text-muted-foreground">
                       <GitBranch className="size-3 shrink-0" />
                       <span className="truncate">
-                        {repoMap.get(candidate.repoId)?.displayName}
-                        {' · '}
-                        {branchDisplayName(candidate.branch)}
+                        {[
+                          repoMap.get(candidate.repoId)?.displayName,
+                          branchDisplayName(candidate.branch)
+                        ].filter(Boolean).join(' · ')}
                       </span>
                     </div>
                   </div>
