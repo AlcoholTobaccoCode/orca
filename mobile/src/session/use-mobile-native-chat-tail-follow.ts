@@ -26,6 +26,9 @@ export function mobileNativeChatRowAnchor(hasHeader: boolean): { minIndexForVisi
   return hasHeader ? ANCHOR_BELOW_HEADER : ANCHOR_AT_FIRST_ROW
 }
 
+/** The part of the page list's scrollable DOM node the pin reads. */
+type PageScroller = { scrollHeight: number }
+
 function distanceFromTail(event: NativeScrollEvent): number {
   const { contentOffset, contentSize, layoutMeasurement } = event
   return contentSize.height - (contentOffset.y + layoutMeasurement.height)
@@ -86,7 +89,6 @@ export function useMobileNativeChatTailFollow<TItem>(args: {
   const userScrollSettleFrameRef = useRef<number | null>(null)
   // Page only: what the offsets last said, in place of the gestures RN Web does not report.
   const pageOffsetRef = useRef(0)
-  const pageContentHeightRef = useRef(0)
   const pageReaderMovedUpRef = useRef(false)
   const scopeKeyRef = useRef(scopeKey)
 
@@ -116,12 +118,15 @@ export function useMobileNativeChatTailFollow<TItem>(args: {
       return
     }
     // Why not `scrollToEnd`: its estimate can land short, and the page reads a move up as the reader's.
-    listRef.current?.scrollToOffset({ animated: false, offset: pageContentHeightRef.current })
+    // The live height: the last reported one can still be the previous chat's.
+    const scroller: PageScroller | null | undefined = listRef.current?.getScrollableNode()
+    if (scroller) {
+      listRef.current?.scrollToOffset({ animated: false, offset: scroller.scrollHeight })
+    }
   }, [hasItems])
 
   const pinToTailAfterContentResize = useCallback(
     (_width: number, height: number) => {
-      pageContentHeightRef.current = height
       if (!followingRef.current || !hasItems) {
         return
       }

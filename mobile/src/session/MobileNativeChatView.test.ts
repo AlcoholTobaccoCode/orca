@@ -7,13 +7,15 @@ import { MobileNativeChatView } from './MobileNativeChatView'
 const scrollToEnd = vi.hoisted(() => vi.fn())
 const scrollToOffset = vi.hoisted(() => vi.fn())
 const platform = vi.hoisted(() => ({ OS: 'ios' }))
+const pageScroller = vi.hoisted(() => ({ scrollHeight: 0 }))
 
 vi.mock('react-native', async () => {
   const React = await import('react')
   return {
     ActivityIndicator: 'ActivityIndicator',
     FlatList: React.forwardRef((props, ref) => {
-      React.useImperativeHandle(ref, () => ({ scrollToEnd, scrollToOffset }), [])
+      const handle = { scrollToEnd, scrollToOffset, getScrollableNode: () => pageScroller }
+      React.useImperativeHandle(ref, () => handle, [])
       return React.createElement('FlatList', props)
     }),
     Platform: platform,
@@ -138,6 +140,7 @@ describe('MobileNativeChatView', () => {
     renderer = null
     scrollToEnd.mockReset()
     scrollToOffset.mockReset()
+    pageScroller.scrollHeight = 0
     vi.unstubAllGlobals()
   })
 
@@ -720,15 +723,16 @@ describe('MobileNativeChatView', () => {
       expect(scrollToOffset).toHaveBeenLastCalledWith({ animated: false, offset: 1_600 })
     })
 
-    it('pins a resized viewport to the measured end, never the list estimate', async () => {
-      await render({ folded: [assistantTurn('a1', 'Latest')] })
+    it("opens another chat at its measured end, not the last chat's", async () => {
+      await render({ folded: [assistantTurn('a1', 'Chat A')] })
       act(() => list().props.onContentSizeChange(320, 1_000))
+      pageScroller.scrollHeight = 2_500
       scrollToEnd.mockClear()
 
-      act(() => list().props.onLayout?.({}))
+      await update({ folded: [assistantTurn('b1', 'Chat B')], sendSurfaceId: 'tab-b' })
 
       expect(scrollToEnd).not.toHaveBeenCalled()
-      expect(scrollToOffset).toHaveBeenLastCalledWith({ animated: false, offset: 1_000 })
+      expect(scrollToOffset).toHaveBeenLastCalledWith({ animated: false, offset: 2_500 })
     })
 
     it('pages in history when the reader scrolls up to the top, not when a pin passes it', async () => {
