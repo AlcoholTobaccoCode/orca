@@ -145,6 +145,46 @@ describe('web preload runtime calls', () => {
     await expect(Promise.all(accepted)).resolves.toHaveLength(264)
   })
 
+  it('refuses a queued preparation after its initiating pairing is replaced', async () => {
+    let release!: () => void
+    const blocked = new Promise<RuntimeRpcResponse<unknown>>((resolve) => {
+      release = () => resolve({ id: 'blocked', ok: true, result: null })
+    })
+    const call = vi.fn(() => blocked)
+    vi.doMock('./web-runtime-client', () => ({
+      WebRuntimeClient: class {
+        call = call
+        close(): void {}
+      }
+    }))
+    const globals = installBrowserGlobals('Linux')
+    writeStoredRuntimeEnvironment(globals.storage, 'web-server-a')
+    const { installWebPreloadApi } = await import('./web-preload-api')
+    const { webRuntimeState } = await import('./preload-api/web-runtime-session')
+    installWebPreloadApi()
+    const blockers = Array.from({ length: 8 }, () =>
+      globals.window.api.runtime.call({ method: 'blocker' })
+    )
+    const environment = webRuntimeState.activeEnvironment
+    if (!environment) {
+      throw new Error('Expected the paired environment')
+    }
+    const queued = globals.window.api.runtimeEnvironments.call({
+      selector: 'web-server-a',
+      method: 'aiVault.prepareSessionResume',
+      expectedEnvironmentPairingRevision: environment.pairingRevision ?? environment.createdAt
+    })
+    const refused = expect(queued).rejects.toThrow('paired Orca server changed')
+    webRuntimeState.activeEnvironment = {
+      ...environment,
+      pairingRevision: (environment.pairingRevision ?? environment.createdAt) + 1
+    }
+    release()
+    await Promise.all(blockers)
+    await refused
+    expect(call).toHaveBeenCalledTimes(8)
+  })
+
   it('does not spend a selected call timeout while queued and forwards it unchanged', async () => {
     vi.useFakeTimers()
     let release!: () => void
