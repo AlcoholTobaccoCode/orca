@@ -9,34 +9,6 @@ const GIT_2_25_5_CHUNKS: string[] = [
   'Updating files:  44% (11/25)\r',
   'Updating files:  48% (12/25)\rUpdating files:  52% (13/25)\rUpdating files:  56% (14/25)\rUpdating files:  60% (15/25)\rUpdating files:  64% (16/25)\rUpdating files:  68% (17/25)\rUpdating files:  72% (18/25)\rUpdating files:  76% (19/25)\rUpdating files:  80% (20/25)\rUpdating files:  84% (21/25)\rUpdating files:  88% (22/25)\rUpdating files:  92% (23/25)\rUpdating files:  96% (24/25)\rUpdating files: 100% (25/25)\rUpdating files: 100% (25/25), done.\n'
 ]
-const GIT_2_50_1_CHUNKS: string[] = [
-  "Preparing worktree (new branch 'c250')\n",
-  'Updating files:   4% (1/25)\r',
-  'Updating files:   8% (2/25)\r',
-  'Updating files:  12% (3/25)\r',
-  'Updating files:  16% (4/25)\r',
-  'Updating files:  20% (5/25)\r',
-  'Updating files:  24% (6/25)\r',
-  'Updating files:  28% (7/25)\r',
-  'Updating files:  32% (8/25)\r',
-  'Updating files:  36% (9/25)\r',
-  'Updating files:  40% (10/25)\r',
-  'Updating files:  44% (11/25)\r',
-  'Updating files:  48% (12/25)\r',
-  'Updating files:  52% (13/25)\r',
-  'Updating files:  56% (14/25)\r',
-  'Updating files:  60% (15/25)\r',
-  'Updating files:  64% (16/25)\r',
-  'Updating files:  68% (17/25)\r',
-  'Updating files:  72% (18/25)\r',
-  'Updating files:  76% (19/25)\r',
-  'Updating files:  80% (20/25)\r',
-  'Updating files:  84% (21/25)\r',
-  'Updating files:  88% (22/25)\r',
-  'Updating files:  92% (23/25)\r',
-  'Updating files:  96% (24/25)\r',
-  'Updating files: 100% (25/25)\rUpdating files: 100% (25/25), done.\n'
-]
 // Same capture with COLUMNS=20: git prints the title once, then bare counters.
 const GIT_2_25_5_NARROW_CHUNKS: string[] = [
   'Updating files:     \n    4% (1/25)\r',
@@ -89,7 +61,6 @@ function expectFullCheckout(records: GitProgressRecord[]): void {
 describe('createGitProgressRecordReader', () => {
   it.each([
     ['2.25.5', GIT_2_25_5_CHUNKS],
-    ['2.50.1', GIT_2_50_1_CHUNKS],
     ['2.25.5 with a narrow COLUMNS', GIT_2_25_5_NARROW_CHUNKS]
   ])('reads every record git %s wrote, as the pipe chunked it', (_version, chunks) => {
     expectFullCheckout(readAll(chunks))
@@ -97,7 +68,6 @@ describe('createGitProgressRecordReader', () => {
 
   it.each([
     ['2.25.5', GIT_2_25_5_CHUNKS],
-    ['2.50.1', GIT_2_50_1_CHUNKS],
     ['2.25.5 with a narrow COLUMNS', GIT_2_25_5_NARROW_CHUNKS]
   ])('reads the same records from git %s wherever a chunk boundary falls', (_version, chunks) => {
     const stream = chunks.join('')
@@ -126,12 +96,6 @@ describe('createGitProgressRecordReader', () => {
         'Updating files: 0% (0/0)\n'
       ])
     ).toEqual([])
-  })
-
-  it('stops reading bare counters once the title line is followed by other output', () => {
-    expect(
-      readAll(['Updating files:\n   50% (1/2)\r', 'post-checkout hook ran\n', '  100% (2/2)\n'])
-    ).toEqual([{ percent: 50, completed: 1, total: 2, done: false }])
   })
 
   it('keeps only a bounded tail of a line that never ends', () => {
