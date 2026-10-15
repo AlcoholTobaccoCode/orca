@@ -51,6 +51,7 @@ jobs:
       package: ${{ steps.readiness.outputs.reused != 'true' && steps.filter.outputs.package }}
       package_windows: ${{ steps.readiness.outputs.reused != 'true' && steps.filter.outputs.package_windows }}
       layout_oracle: ${{ steps.readiness.outputs.reused != 'true' && steps.filter.outputs.layout_oracle }}
+      darwin_terminal_node: ${{ steps.readiness.outputs.reused != 'true' && steps.filter.outputs.darwin_terminal_node }}
       e2e_should_run: ${{ steps.e2e_filter.outputs.should_run }}
       test_files: ${{ steps.e2e_filter.outputs.test_files }}
       e2e_run_changed: ${{ steps.e2e_filter.outputs.e2e_run_changed }}
@@ -1497,6 +1498,34 @@ jobs:
     with:
       ref: ${{ github.event.pull_request.head.sha }}
 
+  darwin_terminal_node:
+    name: mac terminal worker wakeup (${{ matrix.os }})
+    needs: [code_paths, preflight]
+    if: >-
+      !cancelled() && needs.preflight.result == 'success' &&
+      needs.code_paths.outputs.darwin_terminal_node == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      ORCA_BACKGROUND_LAUNCH: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/install-node-dependencies
+        with:
+          native-runtime: node
+      - uses: actions/cache@v5
+        with:
+          path: out/node-runtime-cache
+          key: darwin-terminal-node-${{ runner.arch }}-${{ hashFiles('src/shared/node-runtime-pin.ts', 'config/node-runtime-patches/**', 'config/scripts/build-darwin-terminal-node.mjs') }}
+      - name: Build and verify the shipping terminal runtime
+        run: node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON config/scripts/verify-darwin-terminal-node.mjs
+
   verify:
     name: PR checks passed
     if: ${{ !cancelled() }}
@@ -1514,6 +1543,7 @@ jobs:
       - package
       - package_windows
       - layout_oracle
+      - darwin_terminal_node
     # Evaluating job results only needs the lightweight container runner.
     runs-on: ubuntu-slim
     timeout-minutes: 5
@@ -1555,6 +1585,8 @@ jobs:
           PACKAGE_WINDOWS_SHOULD_RUN: ${{ needs.code_paths.outputs.package_windows }}
           LAYOUT_ORACLE: ${{ needs.layout_oracle.result }}
           LAYOUT_ORACLE_SHOULD_RUN: ${{ needs.code_paths.outputs.layout_oracle }}
+          DARWIN_TERMINAL_NODE: ${{ needs.darwin_terminal_node.result }}
+          DARWIN_TERMINAL_NODE_SHOULD_RUN: ${{ needs.code_paths.outputs.darwin_terminal_node }}
         run: |
           if [ "$CODE_PATHS" != "success" ]; then
             exit 1
@@ -1590,4 +1622,5 @@ jobs:
           check_job package "$PACKAGE" "$PACKAGE_SHOULD_RUN"
           check_job package_windows "$PACKAGE_WINDOWS" "$PACKAGE_WINDOWS_SHOULD_RUN"
           check_job layout_oracle "$LAYOUT_ORACLE" "$LAYOUT_ORACLE_SHOULD_RUN"
+          check_job darwin_terminal_node "$DARWIN_TERMINAL_NODE" "$DARWIN_TERMINAL_NODE_SHOULD_RUN"
           exit "$failed"
