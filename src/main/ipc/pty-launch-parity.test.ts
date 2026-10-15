@@ -545,12 +545,16 @@ describe('spawn preflight: where the lanes differ today', () => {
     const lanes = startParityLanes(suite, { workspace: c.workspace })
     const facts = await spawnBoth(lanes, c.workspace, { projectRuntime: WSL_PROJECT_SENT })
 
-    expect(facts.window).toMatchObject({ shellOverride: 'wsl.exe', terminalWindowsWslDistro: 'Ubuntu' })
+    expect(facts.window).toMatchObject({
+      shellOverride: 'wsl.exe',
+      terminalWindowsWslDistro: 'Ubuntu'
+    })
     expect(facts.host).toMatchObject(c.host)
   })
 
-  // An SSH-launched orcad is the only process with this env, and it has no window (no pty:spawn).
-  it("Windows managed SSH host: only the host lane opens the OpenSSH login shell", async () => {
+  // One resolution reads it for both lanes. Only an SSH-launched orcad has this env, and it has no
+  // window (no pty:spawn), so the window lane never meets it in practice.
+  it('Windows managed SSH host: both lanes open the OpenSSH login shell', async () => {
     setMainPlatform('win32')
     vi.stubEnv('ORCA_ORCAD_MANAGED_ACTIVATION_ROOT', '/activation')
     vi.mocked(readOpenSshDefaultShell).mockReturnValue(LOGIN_SHELL)
@@ -558,7 +562,7 @@ describe('spawn preflight: where the lanes differ today', () => {
     const lanes = startParityLanes(suite, { workspace })
     const facts = await spawnBoth(lanes, workspace, {})
 
-    expect(facts.window).toMatchObject({ shellOverride: 'powershell.exe' })
+    expect(facts.window).toMatchObject({ shellOverride: LOGIN_SHELL })
     expect(facts.host).toMatchObject({ shellOverride: LOGIN_SHELL })
   })
 })
