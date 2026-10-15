@@ -206,64 +206,69 @@ async function decodeReplacementItems(input: {
   const toItem = (message: NativeChatMessage, identity: AgentJournalItemIdentity) =>
     replacementItem(message, identity, input.limits)
   const retained = createNewestItemWindow(MAX_LEGACY_IMPORT_RETAINED_BYTES)
-  const pi = input.agent === 'pi' ? createPiTranscriptCollector(toItem) : null
+  const pi =
+    input.agent === 'pi'
+      ? createPiTranscriptCollector(toItem, (line, lineIndex) => tracker.identify(line, lineIndex))
+      : null
   let lineIndex = 0
-
-  await decodeTranscriptStream(
-    createReadStream(input.filePath),
-    input.filePath,
-    0,
-    (line, fallbackId) => {
-      const trackedIdentity = tracker.identify(line, lineIndex)
-      lineIndex += 1
-      if (pi) {
-        pi.record(line, fallbackId, trackedIdentity)
-        return null
-      }
-      const message = decode(line, fallbackId)
-      if (message) {
-        retained.push(
-          toItem(
-            message,
-            input.decodedMessageIdentities
-              ? {
-                  provider: 'legacy',
-                  agent: input.agent,
-                  sessionId: input.sessionId,
-                  recordId: message.id
-                }
-              : trackedIdentity
+  try {
+    await decodeTranscriptStream(
+      createReadStream(input.filePath),
+      input.filePath,
+      0,
+      (line, fallbackId) => {
+        const currentLineIndex = lineIndex
+        lineIndex += 1
+        if (pi) {
+          pi.record(line, fallbackId, currentLineIndex)
+          return null
+        }
+        const message = decode(line, fallbackId)
+        if (message) {
+          retained.push(
+            toItem(
+              message,
+              input.decodedMessageIdentities
+                ? {
+                    provider: 'legacy',
+                    agent: input.agent,
+                    sessionId: input.sessionId,
+                    recordId: message.id
+                  }
+                : tracker.identify(line, currentLineIndex)
+            )
           )
-        )
-      }
-      return null
-    },
-    true,
-    MAX_LEGACY_IMPORT_RECORD_BYTES
-  )
-  if (pi) {
-    for (const item of pi.project()) {
-      retained.push(item)
+        }
+        return null
+      },
+      true,
+      MAX_LEGACY_IMPORT_RECORD_BYTES
+    )
+    if (pi) {
+      await pi.project(retained.push)
     }
+    return retained.items()
+  } finally {
+    pi?.close()
   }
-  return retained.items()
 }
 
-/** The newest items whose bodies fit `maxBytes`; the latest item is always kept. */
+/** The newest complete items that fit `maxBytes`; the latest item is always kept. */
 function createNewestItemWindow(maxBytes: number): {
   push(item: JournalReplacementItem): void
   items(): JournalReplacementItem[]
 } {
-  let entries: { item: JournalReplacementItem; bytes: number }[] = []
+  let entries: ({ item: JournalReplacementItem; bytes: number } | undefined)[] = []
   let head = 0
   let bytes = 0
   return {
     push(item) {
-      const itemBytes = Buffer.byteLength(JSON.stringify(item.body), 'utf8')
+      const itemBytes = Buffer.byteLength(JSON.stringify(item), 'utf8')
       entries.push({ item, bytes: itemBytes })
       bytes += itemBytes
       while (bytes > maxBytes && head < entries.length - 1) {
-        bytes -= entries[head].bytes
+        bytes -= entries[head]?.bytes ?? 0
+        entries[head] = undefined
         head += 1
       }
       // Drop evicted entries in batches so a long source stays linear.
@@ -272,7 +277,7 @@ function createNewestItemWindow(maxBytes: number): {
         head = 0
       }
     },
-    items: () => entries.slice(head).map((entry) => entry.item)
+    items: () => entries.slice(head).flatMap((entry) => (entry ? [entry.item] : []))
   }
 }
 

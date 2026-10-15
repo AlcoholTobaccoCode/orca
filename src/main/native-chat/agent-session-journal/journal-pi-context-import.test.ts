@@ -52,6 +52,49 @@ describe('saved Pi context import', () => {
     ).toEqual(fixture.texts.map((text) => [text]))
   })
 
+  it('selects saved compaction ancestry after a large inactive branch', async () => {
+    const timestamp = '2026-10-12T12:00:00.000Z'
+    const inactive = Array.from({ length: 950 }, (_, index) => ({
+      type: 'message',
+      id: `inactive-${index}`,
+      parentId: index === 0 ? 'root' : `inactive-${index - 1}`,
+      timestamp,
+      message: { role: 'user', content: 'discarded '.concat('x'.repeat(18 * 1024)) }
+    }))
+    const items = await prepare([
+      {
+        type: 'message',
+        id: 'root',
+        parentId: null,
+        timestamp,
+        message: { role: 'user', content: 'root' }
+      },
+      ...inactive,
+      {
+        type: 'compaction',
+        id: 'summary',
+        parentId: 'root',
+        firstKeptEntryId: 'root',
+        summary: 'summary',
+        timestamp
+      },
+      {
+        type: 'message',
+        id: 'latest',
+        parentId: 'summary',
+        timestamp,
+        message: { role: 'assistant', content: 'latest' }
+      }
+    ])
+    expect(
+      items.flatMap((item) =>
+        item.body.kind === 'message'
+          ? item.body.blocks.flatMap((block) => (block.type === 'text' ? [block.text] : []))
+          : []
+      )
+    ).toEqual(['summary', 'root', 'latest'])
+  })
+
   it('persists compaction and branch summaries in the adopted journal across reopen', async () => {
     const fixture = PI_CONTEXT_FIXTURES[0]
     if (!fixture) {

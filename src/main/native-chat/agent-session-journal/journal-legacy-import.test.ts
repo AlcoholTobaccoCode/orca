@@ -13,7 +13,10 @@ import type { AgentSessionProviderHandle } from '../../../shared/agent-session-p
 import type { NativeChatMessage } from '../../../shared/native-chat-types'
 import type * as TranscriptLineDecoders from '../transcript-line-decoders'
 import { createLegacyIdentityTracker } from './journal-legacy-identity'
-import { importLegacyTranscriptIntoJournal } from './journal-legacy-import'
+import {
+  importLegacyTranscriptIntoJournal,
+  prepareLegacyTranscriptImport
+} from './journal-legacy-import'
 import { DEFAULT_JOURNAL_PAYLOAD_LIMITS } from './journal-payload-bounds'
 import { openAgentSessionJournal } from './journal-store-factory'
 import type { AgentSessionJournal } from './journal-store'
@@ -486,6 +489,38 @@ describe('payload bounds on import', () => {
 })
 
 describe('import failures', () => {
+  it('charges retained identity metadata against the history budget', async () => {
+    const filePath = join(root, 'large-identities.jsonl')
+    const longId = 'i'.repeat(80 * 1024)
+    const lines = Array.from({ length: 250 }, (_, index) =>
+      JSON.stringify({
+        type: 'user',
+        uuid: `${index}-${longId}`,
+        sessionId: CLAUDE_SESSION,
+        message: { role: 'user', content: 'small' }
+      })
+    )
+    await writeFile(filePath, `${lines.join('\n')}\n`, 'utf8')
+
+    const result = await prepareLegacyTranscriptImport({
+      agent: 'claude',
+      sessionId: CLAUDE_SESSION,
+      options: { filePath }
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) {
+      throw new Error(result.error)
+    }
+    expect(result.items.length).toBeLessThan(lines.length)
+    expect(
+      result.items.reduce((total, item) => total + Buffer.byteLength(JSON.stringify(item)), 0)
+    ).toBeLessThanOrEqual(16 * 1024 * 1024)
+    expect(result.items.at(-1)?.identity).toMatchObject({
+      provider: 'claude',
+      uuid: `249-${longId}`
+    })
+  })
+
   it('imports a source past 16 MiB, keeping its newest messages', async () => {
     const journal = await open('claude', CLAUDE_SESSION, {
       database: openTestJournalHostDatabase(join(root, 'large-source-journal'))
@@ -510,11 +545,13 @@ describe('import failures', () => {
     })
 
     expect(result).toMatchObject({ ok: true, replaced: true })
-    const texts = journal.snapshot().items.map((item) =>
-      item.body.kind === 'message' && item.body.blocks[0]?.type === 'text'
-        ? item.body.blocks[0].text.split(' ')[0]
-        : null
-    )
+    const texts = journal
+      .snapshot()
+      .items.map((item) =>
+        item.body.kind === 'message' && item.body.blocks[0]?.type === 'text'
+          ? item.body.blocks[0].text.split(' ')[0]
+          : null
+      )
     expect(texts.at(-1)).toBe('1099')
     expect(texts.length).toBeGreaterThan(900)
     expect(texts.length).toBeLessThan(lines.length)

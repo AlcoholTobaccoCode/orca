@@ -1,63 +1,206 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { AgentJournalItemIdentity } from '../../../shared/agent-session-journal-types'
 import type { NativeChatMessage } from '../../../shared/native-chat-types'
 import { asRecord, parseJsonObject, timestampMs } from '../../ai-vault/session-scanner-values'
+import Database from '../../sqlite/sync-database'
 import { decodeOmpTranscriptLine } from '../transcript-line-decoders-omp'
 
-type PiTranscriptBranchEntry<T> = {
-  id: string
-  parentId: string | null
-  type: unknown
-  firstKeptEntryId: string | null
-  item: T | null
-}
-
-/** `toItem` runs as each line is read, so an entry holds only what the caller keeps of it. */
+/** Keep the complete Pi tree on disk until its saved leaf identifies the active branch. */
 export function createPiTranscriptCollector<T>(
-  toItem: (message: NativeChatMessage, identity: AgentJournalItemIdentity) => T
+  toItem: (message: NativeChatMessage, identity: AgentJournalItemIdentity) => T,
+  identify: (line: string, lineIndex: number) => AgentJournalItemIdentity
 ): {
-  record(line: string, fallbackId: string, identity: AgentJournalItemIdentity): void
-  project(): T[]
+  record(line: string, fallbackId: string, lineIndex: number): void
+  project(keep: (item: T) => void): Promise<void>
+  close(): void
 } {
-  const entries: PiTranscriptBranchEntry<T>[] = []
-  const fileEntryIds: (string | null)[] = []
+  const directory = mkdtempSync(join(tmpdir(), 'orca-pi-import-'))
+  let db: Database.Database
+  let opened: Database.Database | null = null
+  let insert: Database.Statement
+  let byFileIndex: Database.Statement
+  try {
+    opened = new Database(join(directory, 'branch.sqlite'))
+    db = opened
+    db.exec(`
+      PRAGMA journal_mode = OFF;
+      PRAGMA synchronous = OFF;
+      PRAGMA temp_store = FILE;
+      PRAGMA cache_size = -4096;
+      CREATE TABLE entries (
+        id TEXT PRIMARY KEY,
+        file_index INTEGER NOT NULL UNIQUE,
+        parent_id TEXT,
+        type TEXT,
+        first_kept_id TEXT,
+        raw_line TEXT NOT NULL,
+        fallback_id TEXT NOT NULL,
+        line_index INTEGER NOT NULL,
+        branch_depth INTEGER
+      );
+    `)
+    insert = db.prepare(`INSERT INTO entries
+      (id, file_index, parent_id, type, first_kept_id, raw_line, fallback_id, line_index)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    byFileIndex = db.prepare('SELECT id FROM entries WHERE file_index = ?')
+    db.exec('BEGIN')
+  } catch (error) {
+    try {
+      opened?.close()
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+    throw error
+  }
+  let fileIndex = 0
   let version = 1
+  let leafId: string | null = null
+  let closed = false
   return {
-    record(line, fallbackId, identity) {
+    record(line, fallbackId, lineIndex) {
       const record = parseJsonObject(line)
       if (!record) {
         return
       }
       if (record.type === 'session') {
         version = typeof record.version === 'number' ? record.version : 1
-        fileEntryIds.push(null)
+        fileIndex += 1
         return
       }
-      const id = version < 2 ? `#${fileEntryIds.length}` : record.id
-      const parentId = version < 2 ? (entries.at(-1)?.id ?? null) : record.parentId
+      const id = version < 2 ? `#${fileIndex}` : record.id
+      const parentId = version < 2 ? leafId : record.parentId
       if (typeof id !== 'string' || !(parentId === null || typeof parentId === 'string')) {
         throw new Error('Pi session entry has no valid branch identity')
       }
-      // Pi v1 indexes include the header and parsed metadata, but not malformed lines.
-      const firstKeptEntryId =
+      // Pi v1 indexes include headers and parsed metadata, but not malformed lines.
+      const keptByIndex =
         version < 2 && typeof record.firstKeptEntryIndex === 'number'
-          ? fileEntryIds[record.firstKeptEntryIndex]
-          : record.firstKeptEntryId
-      const message =
-        record.type === 'compaction' || record.type === 'branch_summary'
-          ? piSummaryMessage(record, fallbackId)
-          : asRecord(record.message)?.role === 'system'
+          ? byFileIndex.get(record.firstKeptEntryIndex)
+          : undefined
+      const firstKeptId =
+        keptByIndex && typeof keptByIndex.id === 'string'
+          ? keptByIndex.id
+          : version < 2 && typeof record.firstKeptEntryIndex === 'number'
             ? null
-            : decodeOmpTranscriptLine(line, fallbackId)
-      entries.push({
-        id,
-        parentId,
-        type: record.type,
-        firstKeptEntryId: typeof firstKeptEntryId === 'string' ? firstKeptEntryId : null,
-        item: message ? toItem(message, identity) : null
-      })
-      fileEntryIds.push(id)
+            : record.firstKeptEntryId
+      try {
+        insert.run(
+          id,
+          fileIndex,
+          parentId,
+          typeof record.type === 'string' ? record.type : null,
+          typeof firstKeptId === 'string' ? firstKeptId : null,
+          line,
+          fallbackId,
+          lineIndex
+        )
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message.includes('UNIQUE constraint failed: entries.id')
+        ) {
+          throw new Error('Pi session has duplicate branch identities')
+        }
+        throw error
+      }
+      leafId = id
+      fileIndex += 1
+      if (fileIndex % 1024 === 0) {
+        db.exec('COMMIT; BEGIN')
+      }
     },
-    project: () => selectActivePiBranch(entries)
+    async project(keep) {
+      db.exec('COMMIT')
+      if (leafId === null) {
+        return
+      }
+      const byId = db.prepare(
+        'SELECT parent_id, type, first_kept_id, branch_depth FROM entries WHERE id = ?'
+      )
+      const mark = db.prepare('UPDATE entries SET branch_depth = ? WHERE id = ?')
+      let currentId: string | null = leafId
+      let depth = 0
+      let compactionDepth: number | null = null
+      let firstKeptId: string | null = null
+      db.exec('BEGIN')
+      while (currentId !== null) {
+        const row = byId.get(currentId)
+        if (!row) {
+          break
+        }
+        if (row.branch_depth !== null) {
+          throw new Error('Pi session branch contains a cycle')
+        }
+        mark.run(depth, currentId)
+        if (compactionDepth === null && row.type === 'compaction') {
+          compactionDepth = depth
+          firstKeptId = typeof row.first_kept_id === 'string' ? row.first_kept_id : null
+        }
+        currentId = typeof row.parent_id === 'string' && row.parent_id ? row.parent_id : null
+        depth += 1
+        if (depth % 1024 === 0) {
+          await new Promise<void>((resolve) => setImmediate(resolve))
+        }
+      }
+      db.exec('COMMIT')
+      const selected = db.prepare(`SELECT raw_line, fallback_id, line_index FROM entries
+        WHERE branch_depth IS NOT NULL AND branch_depth >= ? AND branch_depth <= ?
+        ORDER BY branch_depth DESC`)
+      const emit = async (from: number, through: number): Promise<void> => {
+        let emitted = 0
+        for (const row of selected.iterate(from, through)) {
+          if (
+            typeof row.raw_line !== 'string' ||
+            typeof row.fallback_id !== 'string' ||
+            typeof row.line_index !== 'number'
+          ) {
+            throw new Error('Pi session branch index is unreadable')
+          }
+          const record = parseJsonObject(row.raw_line)
+          if (!record) {
+            continue
+          }
+          const message =
+            record.type === 'compaction' || record.type === 'branch_summary'
+              ? piSummaryMessage(record, row.fallback_id)
+              : asRecord(record.message)?.role === 'system'
+                ? null
+                : decodeOmpTranscriptLine(row.raw_line, row.fallback_id)
+          if (message) {
+            keep(toItem(message, identify(row.raw_line, row.line_index)))
+          }
+          emitted += 1
+          if (emitted % 256 === 0) {
+            await new Promise<void>((resolve) => setImmediate(resolve))
+          }
+        }
+      }
+      if (compactionDepth === null) {
+        await emit(0, depth - 1)
+        return
+      }
+      await emit(compactionDepth, compactionDepth)
+      const kept = firstKeptId === null ? undefined : byId.get(firstKeptId)
+      if (typeof kept?.branch_depth === 'number' && kept.branch_depth > compactionDepth) {
+        await emit(compactionDepth + 1, kept.branch_depth)
+      }
+      if (compactionDepth > 0) {
+        await emit(0, compactionDepth - 1)
+      }
+    },
+    close() {
+      if (closed) {
+        return
+      }
+      closed = true
+      try {
+        db.close()
+      } finally {
+        rmSync(directory, { recursive: true, force: true })
+      }
+    }
   }
 }
 
@@ -77,37 +220,4 @@ function piSummaryMessage(
     timestamp: Number.isFinite(timestamp) ? timestamp : null,
     source: 'transcript'
   }
-}
-
-/** Match Pi's fresh-session TUI: persisted leaf ancestry, then buildContextEntries. */
-function selectActivePiBranch<T>(entries: readonly PiTranscriptBranchEntry<T>[]): T[] {
-  const byId = new Map(entries.map((entry) => [entry.id, entry]))
-  if (byId.size !== entries.length) {
-    throw new Error('Pi session has duplicate branch identities')
-  }
-  const branch: PiTranscriptBranchEntry<T>[] = []
-  const visited = new Set<string>()
-  let current = entries.at(-1)
-  while (current) {
-    if (visited.has(current.id)) {
-      throw new Error('Pi session branch contains a cycle')
-    }
-    visited.add(current.id)
-    branch.push(current)
-    current = current.parentId ? byId.get(current.parentId) : undefined
-  }
-  return compactedPiBranch(branch.toReversed()).flatMap((entry) => (entry.item === null ? [] : [entry.item]))
-}
-
-function compactedPiBranch<T>(branch: PiTranscriptBranchEntry<T>[]): PiTranscriptBranchEntry<T>[] {
-  const compactionIndex = branch.findLastIndex((entry) => entry.type === 'compaction')
-  const compaction = branch[compactionIndex]
-  if (!compaction) {
-    return branch
-  }
-  const keptIndex = branch.findIndex((entry) => entry.id === compaction.firstKeptEntryId)
-  // Pi searches for firstKeptEntryId only before the latest compaction.
-  const kept =
-    keptIndex !== -1 && keptIndex < compactionIndex ? branch.slice(keptIndex, compactionIndex) : []
-  return [compaction, ...kept, ...branch.slice(compactionIndex + 1)]
 }
